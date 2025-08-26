@@ -178,7 +178,7 @@ def main():
     # Grid
     p.add_argument("--kmax", type=parse_int_list, default="2,4,6")
     p.add_argument("--tau", type=parse_float_list, default="0.95,0.98,0.99")
-    p.add_argument("--lambda-ponder", type=parse_float_list, default="0.01,0.03,0.1")
+    p.add_argument("--lambda-ponder", type=parse_float_list, default="0.001,0.003,0.01")
     p.add_argument("--halting-mass-scale", type=parse_float_list, default="1.0")
     p.add_argument("--lrs", type=parse_float_list, default="1e-4,5e-4,1e-3")
 
@@ -325,7 +325,7 @@ def main():
                             output_dir=out_dir,
                             eval_strategy="steps",
                             eval_steps=args.eval_steps,
-                            eval_on_start=True,
+                            eval_on_start=False,
                             learning_rate=lr,
                             lr_scheduler_type="cosine",
                             warmup_ratio=args.warmup_ratio,
