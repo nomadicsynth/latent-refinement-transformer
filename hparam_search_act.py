@@ -524,6 +524,7 @@ def main():
                 "k_max",
                 "tau",
                 "lambda_ponder",
+                "halting_mass_scale",
                 "learning_rate",
                 "steps_trained",
                 "eval_loss",
