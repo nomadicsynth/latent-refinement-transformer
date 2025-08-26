@@ -1,0 +1,13 @@
+accelerate
+datasets
+flash-attn
+ipykernel
+ipywidgets
+nbformat
+ninja
+packaging
+torch
+transformers
+trl
+wandb
+wheel
