@@ -179,6 +179,7 @@ def main():
     p.add_argument("--kmax", type=parse_int_list, default="2,4,6")
     p.add_argument("--tau", type=parse_float_list, default="0.95,0.98,0.99")
     p.add_argument("--lambda-ponder", type=parse_float_list, default="0.01,0.03,0.1")
+    p.add_argument("--halting-mass-scale", type=parse_float_list, default="1.0")
     p.add_argument("--lrs", type=parse_float_list, default="1e-4,5e-4,1e-3")
 
     # Trainer
@@ -245,7 +246,7 @@ def main():
     tok.pad_token = tok.eos_token
 
     # Build full grid then optionally subsample
-    full_grid = [(K, t, l, lr) for K in args.kmax for t in args.tau for l in args.lambda_ponder for lr in args.lrs]
+    full_grid = [(K, t, l, hs, lr) for K in args.kmax for t in args.tau for l in args.lambda_ponder for hs in args.halting_mass_scale for lr in args.lrs]
     if args.sample_trials and args.sample_trials > 0 and args.sample_trials < len(full_grid):
         grid = random.sample(full_grid, args.sample_trials)
     else:
@@ -255,9 +256,9 @@ def main():
 
     results: List[TrialResult] = []
     idx = 0
-    for (K, tau, lam, lr) in grid:
+    for (K, tau, lam, hs, lr) in grid:
         idx += 1
-        run_name = f"K{K}-tau{tau}-lam{lam}-lr{lr:g}"
+        run_name = f"K{K}-tau{tau}-lam{lam}-hs{hs}-lr{lr:g}"
         out_dir = os.path.join(args.output_root, run_name)
         os.makedirs(out_dir, exist_ok=True)
         print("\n" + "=" * 80)
@@ -278,6 +279,7 @@ def main():
                                     "k_max": K,
                                     "tau": tau,
                                     "lambda_ponder": lam,
+                                    "halting_mass_scale": hs,
                                     "learning_rate": lr,
                                     "hidden_size": args.hidden_size,
                                     "intermediate_size": args.intermediate_size,
@@ -310,7 +312,7 @@ def main():
             cfg.num_key_value_heads = args.num_kv_heads
             cfg._attn_implementation = args.attn_impl
 
-            model = RecursiveHaltingMistralForCausalLM(cfg, k_max=K, tau=tau, lambda_ponder=lam).to(
+            model = RecursiveHaltingMistralForCausalLM(cfg, k_max=K, tau=tau, lambda_ponder=lam, halting_mass_scale=hs).to(
                             device=device, dtype=(torch.bfloat16 if args.bf16 else torch.float32)
                         )
             if args.compile and hasattr(torch, "compile"):

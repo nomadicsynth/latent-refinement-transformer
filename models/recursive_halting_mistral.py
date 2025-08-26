@@ -37,12 +37,13 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
     - In training, we form a convex combination of logits over inner steps using w_t.
     """
 
-    def __init__(self, config, k_max: int = 4, tau: float = 0.99, lambda_ponder: float = 0.03):
+    def __init__(self, config, k_max: int = 4, tau: float = 0.99, lambda_ponder: float = 0.001, halting_mass_scale: float = 1.0):
         super().__init__(config)
         assert k_max >= 1
         self.k_max = k_max
         self.tau = tau
         self.lambda_ponder = lambda_ponder
+        self.halting_mass_scale = halting_mass_scale
         self.stop_head = StopHead(config.hidden_size)
         # Exposed telemetry for callbacks/logging
         self._last_inner_steps = 1
@@ -90,7 +91,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             p_t = self.stop_head(h)  # [b]
             p_list.append(p_t)
 
-            new_halt = (halting_mass + p_t) > self.tau
+            new_halt = (halting_mass + p_t * self.halting_mass_scale) > self.tau
             still_running = (halting_mass < self.tau).float()
 
             # Compute weight for this step
@@ -101,7 +102,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             )
             w_t = w_t * still_running
             weights.append(w_t)
-            halting_mass = halting_mass + w_t
+            halting_mass = halting_mass + w_t * self.halting_mass_scale
 
             # Logits from this step
             logits_t = self.lm_head(h)
