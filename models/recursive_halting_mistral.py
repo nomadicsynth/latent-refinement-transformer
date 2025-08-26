@@ -82,7 +82,6 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
 
         batch_size = h.size(0)
         halting_mass = torch.zeros(batch_size, device=h.device, dtype=h.dtype)
-        remainders = torch.zeros_like(halting_mass)
         weights = []
         logits_list = []
         p_list = []
@@ -91,7 +90,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             p_t = self.stop_head(h)  # [b]
             p_list.append(p_t)
 
-            new_halt = (halting_mass + p_t * self.halting_mass_scale) > self.tau
+            new_halt = (halting_mass + p_t) > self.tau
             still_running = (halting_mass < self.tau).float()
 
             # Compute weight for this step
@@ -102,7 +101,8 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             )
             w_t = w_t * still_running
             weights.append(w_t)
-            halting_mass = halting_mass + w_t * self.halting_mass_scale
+            halting_mass = halting_mass + w_t
+            halting_mass = halting_mass * self.halting_mass_scale
 
             # Logits from this step
             logits_t = self.lm_head(h)
