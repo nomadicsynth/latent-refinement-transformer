@@ -108,7 +108,7 @@ def render_architecture_diagram(
 	lines.append(f'    act [label="{act_label}", shape=note, color="#6666aa"];')
 	# Optional: draw a self-loop to indicate dynamic unrolling within the transformer
 	if k_max and k_max > 1:
-		lines.append(f'    block -> block [label="dynamic loop (min=1, max={k_max})", style=dashed];')
+		lines.append(f'    block -> block [label="dynamic loop (min=1, max=k_max)", style=dashed];')
 	lines.append('  }')
 
 	lines.append('  norm [label="Final Norm"];')
