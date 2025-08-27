@@ -1,0 +1,36 @@
+{
+  "defaults": { "vocab_size": 256, "hidden_size": 128, "num_heads": 4 },
+  "nodes": [
+    { "id": "embed", "type": "Embedding", "data": { "vocab_size": 256, "hidden_size": 128 } },
+    { "id": "blk1", "type": "Block", "data": { "hidden_size": 128, "num_heads": 4 } },
+    { "id": "blk2", "type": "Block", "data": { "hidden_size": 128, "num_heads": 4 } },
+    { "id": "norm", "type": "Norm", "data": { "hidden_size": 128 } },
+    { "id": "lm", "type": "LMHead", "data": { "hidden_size": 128, "vocab_size": 256 } }
+  ],
+  "edges": [
+    { "source": "embed", "target": "blk1" },
+    { "source": "blk1", "target": "blk2" },
+    { "source": "blk2", "target": "norm" },
+    { "source": "norm", "target": "lm" },
+    { "source": "attention_mask", "target": "blk1", "label": "mask" },
+    { "source": "attention_mask", "target": "blk2", "label": "mask" }
+  ]
+}
+{
+  "defaults": { "vocab_size": 256, "hidden_size": 128, "num_heads": 4 },
+  "nodes": [
+    { "id": "embed", "type": "Embedding", "data": { "vocab_size": 256, "hidden_size": 128 } },
+    { "id": "blk1", "type": "Block", "data": { "hidden_size": 128, "num_heads": 4 } },
+    { "id": "blk2", "type": "Block", "data": { "hidden_size": 128, "num_heads": 4 } },
+    { "id": "norm", "type": "Norm", "data": { "hidden_size": 128 } },
+    { "id": "lm", "type": "LMHead", "data": { "hidden_size": 128, "vocab_size": 256 } }
+  ],
+  "edges": [
+    { "source": "embed", "target": "blk1" },
+    { "source": "blk1", "target": "blk2" },
+    { "source": "blk2", "target": "norm" },
+    { "source": "norm", "target": "lm" },
+    { "source": "attention_mask", "target": "blk1", "label": "mask" },
+    { "source": "attention_mask", "target": "blk2", "label": "mask" }
+  ]
+}
