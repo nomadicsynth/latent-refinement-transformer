@@ -1,21 +1,24 @@
 #!/usr/bin/env python
 import argparse
-import random
 import csv
 import math
 import os
+import random
 import sys
 import time
 from dataclasses import asdict, dataclass
 from typing import List, Optional
 
 import torch
-from datasets import load_from_disk
-from transformers import AutoTokenizer, MistralConfig, EarlyStoppingCallback, TrainerCallback, TrainerControl, TrainerState
+from transformers import (AutoTokenizer, EarlyStoppingCallback, MistralConfig,
+                          TrainerCallback, TrainerControl, TrainerState)
 from transformers.integrations import WandbCallback
 from trl import SFTConfig, SFTTrainer
 
+from datasets import load_from_disk
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+
+
 class HaltingStatsCallback(TrainerCallback):
     """Injects ACT halting telemetry into the Trainer logs so W&B picks them up.
 
@@ -196,7 +199,12 @@ def main():
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--max-steps", type=int, default=1000)
     p.add_argument("--dataset-num-proc", type=int, default=4)
-    p.add_argument("--grad-checkpointing", action="store_true", default=False, help="Enable gradient checkpointing (slower but saves VRAM)")
+    p.add_argument(
+        "--grad-checkpointing",
+        action="store_true",
+        default=False,
+        help="Enable gradient checkpointing (slower but saves VRAM)",
+    )
     p.add_argument("--compile", action="store_true", default=False, help="Use torch.compile for potential speedups")
     p.add_argument("--early-stopping", action="store_true", default=False, help="Enable early stopping on eval_loss")
     p.add_argument("--early-stopping-patience", type=int, default=3)
@@ -209,7 +217,12 @@ def main():
     p.add_argument("--eval-samples", type=int, default=128)
 
     # Randomly sample a subset of the grid to cut total trials
-    p.add_argument("--sample-trials", type=int, default=0, help="If >0, randomly sample this many unique trial combos from the full grid")
+    p.add_argument(
+        "--sample-trials",
+        type=int,
+        default=0,
+        help="If >0, randomly sample this many unique trial combos from the full grid",
+    )
 
     # Output/logging
     p.add_argument("--use-wandb", action="store_true", default=False)
@@ -246,7 +259,14 @@ def main():
     tok.pad_token = tok.eos_token
 
     # Build full grid then optionally subsample
-    full_grid = [(K, t, l, hs, lr) for K in args.kmax for t in args.tau for l in args.lambda_ponder for hs in args.halting_mass_scale for lr in args.lrs]
+    full_grid = [
+        (K, t, l, hs, lr)
+        for K in args.kmax
+        for t in args.tau
+        for l in args.lambda_ponder
+        for hs in args.halting_mass_scale
+        for lr in args.lrs
+    ]
     if args.sample_trials and args.sample_trials > 0 and args.sample_trials < len(full_grid):
         grid = random.sample(full_grid, args.sample_trials)
     else:
@@ -256,7 +276,7 @@ def main():
 
     results: List[TrialResult] = []
     idx = 0
-    for (K, tau, lam, hs, lr) in grid:
+    for K, tau, lam, hs, lr in grid:
         idx += 1
         run_name = f"K{K}-tau{tau}-lam{lam}-hs{hs}-lr{lr:g}"
         out_dir = os.path.join(args.output_root, run_name)
@@ -271,39 +291,39 @@ def main():
                 import wandb
 
                 wandb.init(
-                                project=args.wandb_project,
-                                group=args.group,
-                                name=run_name,
-                                reinit=True,
-                                config={
-                                    "k_max": K,
-                                    "tau": tau,
-                                    "lambda_ponder": lam,
-                                    "halting_mass_scale": hs,
-                                    "learning_rate": lr,
-                                    "hidden_size": args.hidden_size,
-                                    "intermediate_size": args.intermediate_size,
-                                    "num_layers": args.num_layers,
-                                    "num_attention_heads": args.num_attention_heads,
-                                    "num_kv_heads": args.num_kv_heads,
-                                    "attn_impl": args.attn_impl,
-                                    "per_device_train_batch_size": args.per_device_train_batch_size,
-                                    "per_device_eval_batch_size": args.per_device_eval_batch_size,
-                                    "grad_accum": args.grad_accum,
-                                    "warmup_ratio": args.warmup_ratio,
-                                    "max_grad_norm": args.max_grad_norm,
-                                    "weight_decay": args.weight_decay,
-                                    "bf16": args.bf16,
-                                    "max_length": args.max_length,
-                                    "eval_steps": args.eval_steps,
-                                    "logging_steps": args.logging_steps,
-                                    "max_steps": args.max_steps,
-                                    "packing": args.packing,
-                                    "train_samples": args.train_samples,
-                                    "eval_samples": args.eval_samples,
-                                    "dataset_path": args.dataset_path,
-                                },
-                            )
+                    project=args.wandb_project,
+                    group=args.group,
+                    name=run_name,
+                    reinit=True,
+                    config={
+                        "k_max": K,
+                        "tau": tau,
+                        "lambda_ponder": lam,
+                        "halting_mass_scale": hs,
+                        "learning_rate": lr,
+                        "hidden_size": args.hidden_size,
+                        "intermediate_size": args.intermediate_size,
+                        "num_layers": args.num_layers,
+                        "num_attention_heads": args.num_attention_heads,
+                        "num_kv_heads": args.num_kv_heads,
+                        "attn_impl": args.attn_impl,
+                        "per_device_train_batch_size": args.per_device_train_batch_size,
+                        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+                        "grad_accum": args.grad_accum,
+                        "warmup_ratio": args.warmup_ratio,
+                        "max_grad_norm": args.max_grad_norm,
+                        "weight_decay": args.weight_decay,
+                        "bf16": args.bf16,
+                        "max_length": args.max_length,
+                        "eval_steps": args.eval_steps,
+                        "logging_steps": args.logging_steps,
+                        "max_steps": args.max_steps,
+                        "packing": args.packing,
+                        "train_samples": args.train_samples,
+                        "eval_samples": args.eval_samples,
+                        "dataset_path": args.dataset_path,
+                    },
+                )
             cfg = MistralConfig.from_pretrained(args.tokenizer_name)
             cfg.hidden_size = args.hidden_size
             cfg.intermediate_size = args.intermediate_size
@@ -312,9 +332,9 @@ def main():
             cfg.num_key_value_heads = args.num_kv_heads
             cfg._attn_implementation = args.attn_impl
 
-            model = RecursiveHaltingMistralForCausalLM(cfg, k_max=K, tau=tau, lambda_ponder=lam, halting_mass_scale=hs).to(
-                            device=device, dtype=(torch.bfloat16 if args.bf16 else torch.float32)
-                        )
+            model = RecursiveHaltingMistralForCausalLM(
+                cfg, k_max=K, tau=tau, lambda_ponder=lam, halting_mass_scale=hs
+            ).to(device=device, dtype=(torch.bfloat16 if args.bf16 else torch.float32))
             if args.compile and hasattr(torch, "compile"):
                 try:
                     model = torch.compile(model)
@@ -322,43 +342,48 @@ def main():
                     pass
 
             sft = SFTConfig(
-                            output_dir=out_dir,
-                            eval_strategy="steps",
-                            eval_steps=args.eval_steps,
-                            eval_on_start=False,
-                            learning_rate=lr,
-                            lr_scheduler_type="cosine",
-                            warmup_ratio=args.warmup_ratio,
-                            max_grad_norm=args.max_grad_norm,
-                            per_device_train_batch_size=args.per_device_train_batch_size,
-                            per_device_eval_batch_size=args.per_device_eval_batch_size,
-                            gradient_accumulation_steps=args.grad_accum,
-                            gradient_checkpointing=args.grad_checkpointing,
-                            max_steps=args.max_steps,
-                            weight_decay=args.weight_decay,
-                            completion_only_loss=False,
-                            bf16=args.bf16,
-                            bf16_full_eval=args.bf16,
-                            max_length=args.max_length,
-                            logging_strategy="steps",
-                            logging_steps=args.logging_steps,
-                            save_strategy="no",
-                            metric_for_best_model="eval_loss",
-                            greater_is_better=False,
-                            # We'll attach WandB via explicit callback to control ordering
-                            report_to=("none" if args.use_wandb else "none"),
-                            dataset_num_proc=args.dataset_num_proc,
-                            eos_token=tok.eos_token,
-                            pad_token=tok.pad_token,
-                            packing=args.packing,
-                            dataset_kwargs={"skip_preprocessing": True},
-                            use_liger_kernel=False,
-                            run_name=run_name,
-                        )
+                output_dir=out_dir,
+                eval_strategy="steps",
+                eval_steps=args.eval_steps,
+                eval_on_start=False,
+                learning_rate=lr,
+                lr_scheduler_type="cosine",
+                warmup_ratio=args.warmup_ratio,
+                max_grad_norm=args.max_grad_norm,
+                per_device_train_batch_size=args.per_device_train_batch_size,
+                per_device_eval_batch_size=args.per_device_eval_batch_size,
+                gradient_accumulation_steps=args.grad_accum,
+                gradient_checkpointing=args.grad_checkpointing,
+                max_steps=args.max_steps,
+                weight_decay=args.weight_decay,
+                completion_only_loss=False,
+                bf16=args.bf16,
+                bf16_full_eval=args.bf16,
+                max_length=args.max_length,
+                logging_strategy="steps",
+                logging_steps=args.logging_steps,
+                save_strategy="no",
+                metric_for_best_model="eval_loss",
+                greater_is_better=False,
+                # We'll attach WandB via explicit callback to control ordering
+                report_to=("none" if args.use_wandb else "none"),
+                dataset_num_proc=args.dataset_num_proc,
+                eos_token=tok.eos_token,
+                pad_token=tok.pad_token,
+                packing=args.packing,
+                dataset_kwargs={"skip_preprocessing": True},
+                use_liger_kernel=False,
+                run_name=run_name,
+            )
 
             callbacks = []
             if args.early_stopping:
-                callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience, early_stopping_threshold=args.early_stopping_threshold))
+                callbacks.append(
+                    EarlyStoppingCallback(
+                        early_stopping_patience=args.early_stopping_patience,
+                        early_stopping_threshold=args.early_stopping_threshold,
+                    )
+                )
             # Always add ACT halting stats logger
             callbacks.append(HaltingStatsCallback())
             # If using W&B, add our ACT-aware WandB callback
@@ -366,13 +391,13 @@ def main():
                 callbacks.append(ACTWandbCallback())
 
             trainer = SFTTrainer(
-                            model=model,
-                            args=sft,
-                            train_dataset=train_ds,
-                            eval_dataset=eval_ds,
-                            processing_class=tok,
-                            callbacks=callbacks if callbacks else None,
-                        )
+                model=model,
+                args=sft,
+                train_dataset=train_ds,
+                eval_dataset=eval_ds,
+                processing_class=tok,
+                callbacks=callbacks if callbacks else None,
+            )
             # Placeholders to record ACT telemetry snapshots
             train_act_inner = None
             train_act_expected = None
@@ -459,45 +484,45 @@ def main():
                 pass
 
             results.append(
-                            TrialResult(
-                                k_max=K,
-                                tau=tau,
-                                lambda_ponder=lam,
-                                learning_rate=lr,
-                                steps_trained=steps_trained,
-                                eval_loss=(float(loss) if loss is not None else None),
-                                eval_ppl=ppl,
-                                best_eval_loss=best_eval_loss,
-                                best_eval_step=best_eval_step,
-                                best_train_loss=best_train_loss,
-                                best_train_step=best_train_step,
-                                train_runtime_s=time.time() - start,
-                                status="ok",
-                                output_dir=out_dir,
-                            )
-                        )
+                TrialResult(
+                    k_max=K,
+                    tau=tau,
+                    lambda_ponder=lam,
+                    learning_rate=lr,
+                    steps_trained=steps_trained,
+                    eval_loss=(float(loss) if loss is not None else None),
+                    eval_ppl=ppl,
+                    best_eval_loss=best_eval_loss,
+                    best_eval_step=best_eval_step,
+                    best_train_loss=best_train_loss,
+                    best_train_step=best_train_step,
+                    train_runtime_s=time.time() - start,
+                    status="ok",
+                    output_dir=out_dir,
+                )
+            )
         except RuntimeError as e:
             err = str(e)
             print(f"Error in {run_name}: {err}", file=sys.stderr)
             results.append(
-                            TrialResult(
-                                k_max=K,
-                                tau=tau,
-                                lambda_ponder=lam,
-                                learning_rate=lr,
-                                steps_trained=None,
-                                eval_loss=None,
-                                eval_ppl=None,
-                                best_eval_loss=None,
-                                best_eval_step=None,
-                                best_train_loss=None,
-                                best_train_step=None,
-                                train_runtime_s=time.time() - start,
-                                status="error",
-                                error=err,
-                                output_dir=out_dir,
-                            )
-                        )
+                TrialResult(
+                    k_max=K,
+                    tau=tau,
+                    lambda_ponder=lam,
+                    learning_rate=lr,
+                    steps_trained=None,
+                    eval_loss=None,
+                    eval_ppl=None,
+                    best_eval_loss=None,
+                    best_eval_step=None,
+                    best_train_loss=None,
+                    best_train_step=None,
+                    train_runtime_s=time.time() - start,
+                    status="error",
+                    error=err,
+                    output_dir=out_dir,
+                )
+            )
         finally:
             try:
                 import wandb
