@@ -636,4 +636,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Exiting early due to Ctrl-C")
+        try:
+            import wandb
+
+            if os.environ.get("WANDB_MODE") != "disabled":
+                wandb.finish(quiet=True)
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        sys.exit(0)
