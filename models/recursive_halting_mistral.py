@@ -21,9 +21,9 @@ class StopHead(nn.Module):
         self.proj = nn.Linear(hidden_size, 1)
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
-        # h: [batch, seq, hidden] → pool over seq
-        pooled = h.mean(dim=1)
-        return torch.sigmoid(self.proj(pooled)).squeeze(-1)  # [batch]
+        # h: [batch, seq, hidden] -> per-token stop probability
+        # return shape: [batch, seq]
+        return torch.sigmoid(self.proj(h)).squeeze(-1)
 
 
 class StepFiLM(nn.Module):
@@ -119,19 +119,28 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         )
         h = outputs.last_hidden_state  # [b, s, d]
 
-        batch_size = h.size(0)
-        halting_mass = torch.zeros(batch_size, device=h.device, dtype=h.dtype)
+        batch_size, seq_len = h.size(0), h.size(1)
+        # Valid token mask [b, s] (1 for valid tokens, 0 for padding). If None, all ones.
+        if attention_mask is None:
+            valid_mask = torch.ones((batch_size, seq_len), device=h.device, dtype=torch.bool)
+        else:
+            # ensure boolean mask
+            valid_mask = attention_mask.to(dtype=torch.bool)
+
+        # Halting mass tracked per token [b, s]
+        halting_mass = torch.zeros((batch_size, seq_len), device=h.device, dtype=h.dtype)
         weights = []
         logits_list = []
         p_list = []
         ce_per_step = []  # deep supervision
 
         for t in range(self.k_max):
-            p_t = self.stop_head(h)  # [b]
+            p_t = self.stop_head(h)  # [b, s]
             p_list.append(p_t)
 
-            new_halt = (halting_mass + p_t) > self.tau
-            still_running = (halting_mass < self.tau).float()
+            # Compute masks for tokens still running and those that will newly halt
+            new_halt = ((halting_mass + p_t) > self.tau) & valid_mask
+            still_running = ((halting_mass < self.tau) & valid_mask).to(dtype=h.dtype)
 
             # Compute weight for this step
             w_t = torch.where(
@@ -141,8 +150,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             )
             w_t = w_t * still_running
             weights.append(w_t)
-            halting_mass = halting_mass + w_t
-            halting_mass = halting_mass * self.halting_mass_scale
+            halting_mass = (halting_mass + w_t) * self.halting_mass_scale
 
             # Logits from this step
             logits_t = self.lm_head(h)
@@ -158,7 +166,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
                 ce_per_step.append(ce_t)
 
             # Early exit if all halted
-            if torch.all(halting_mass >= self.tau):
+            if torch.all((halting_mass >= self.tau) | (~valid_mask)):
                 break
 
             # Next inner step input: step-conditioned FiLM to change the function
@@ -184,17 +192,22 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             h = outputs.last_hidden_state
 
         # Normalize weights so sum_t w_t ~ 1 for running samples; clamp for numerical stability
-        W = torch.stack(weights, dim=0)  # [T, b]
+        W = torch.stack(weights, dim=0)  # [T, b, s]
         W = torch.clamp(W, min=0.0, max=1.0)
+        # Zero-out any weights on invalid tokens explicitly for safety
+        W = W * valid_mask.to(dtype=W.dtype).unsqueeze(0)
         W_sum = torch.clamp(W.sum(dim=0, keepdim=True), min=1e-6)
         W_norm = W / W_sum
 
         # Combine logits: convex combination over steps
-        logits = sum(w.view(-1, 1, 1) * L for w, L in zip(W_norm, logits_list))
+        logits = sum(w.unsqueeze(-1) * L for w, L in zip(W_norm, logits_list))  # [b, s, vocab]
 
         # Expected steps (per batch) for ponder loss
-        steps = torch.arange(1, W.size(0) + 1, device=h.device, dtype=h.dtype).view(-1, 1)
-        expected_steps = (W_norm * steps).sum(dim=0)  # [b]
+        steps = torch.arange(1, W.size(0) + 1, device=h.device, dtype=h.dtype).view(-1, 1, 1)  # [T,1,1]
+        expected_steps_tokens = (W_norm * steps).sum(dim=0)  # [b, s]
+        # Compute masked mean per batch element
+        valid_counts = valid_mask.to(dtype=h.dtype).sum(dim=1).clamp(min=1.0)  # [b]
+        expected_steps = (expected_steps_tokens * valid_mask.to(dtype=h.dtype)).sum(dim=1) / valid_counts  # [b]
 
         # Expose last-step telemetry
         try:
