@@ -8,6 +8,7 @@ ninja
 packaging
 sentencepiece
 torch
+tqdm
 transformers
 trl
 wandb
