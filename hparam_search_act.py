@@ -23,6 +23,12 @@ from trl import SFTConfig, SFTTrainer
 
 from datasets import load_from_disk
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+try:
+    # tqdm for a nice progress bar over the sweep
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - best-effort fallback if tqdm isn't installed
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 class HaltingStatsCallback(TrainerCallback):
@@ -299,9 +305,9 @@ def main():
     print(f"Total trials: {total}")
 
     results: List[TrialResult] = []
-    idx = 0
-    for K, tau, lam, hs, sf, fr, ds, lr in grid:
-        idx += 1
+    for idx, (K, tau, lam, hs, sf, fr, ds, lr) in enumerate(
+        tqdm(grid, total=total, desc="ACT sweep", dynamic_ncols=True), start=1
+    ):
         run_name = f"K{K}-tau{tau}-lam{lam}-hs{hs}-sf{sf}-fr{fr}-ds{ds}-lr{lr:g}"
         out_dir = os.path.join(args.output_root, run_name)
         os.makedirs(out_dir, exist_ok=True)
