@@ -281,7 +281,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name)
     tok.pad_token = tok.eos_token
 
-    # Build full grid then optionally subsample
+    # Build full grid
     full_grid = [
         (K, t, l, hs, sf, fr, ds, lr)
         for K in args.kmax
@@ -294,9 +294,12 @@ def main():
         for lr in args.lrs
     ]
     print(f"Initial full grid size: {len(full_grid)}")
-    # Remove items where `sf` is False and `fr` is not 128
-    full_grid = [x for x in full_grid if not (x[4] == False and x[5] != 128)]
+
+    # Remove items where `sf` is False and (`fr` is not 128 or ds is not 0.0)
+    full_grid = [x for x in full_grid if not (x[4] == False and (x[5] != 128 or x[6] != 0.0))]
     print(f"Total grid size: {len(full_grid)}")
+
+    # Randomly sample a subset of the grid to cut total trials
     if args.sample_trials and args.sample_trials > 0 and args.sample_trials < len(full_grid):
         grid = random.sample(full_grid, args.sample_trials)
     else:
