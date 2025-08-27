@@ -10,8 +10,14 @@ from dataclasses import asdict, dataclass
 from typing import List, Optional
 
 import torch
-from transformers import (AutoTokenizer, EarlyStoppingCallback, MistralConfig,
-                          TrainerCallback, TrainerControl, TrainerState)
+from transformers import (
+    AutoTokenizer,
+    EarlyStoppingCallback,
+    MistralConfig,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+)
 from transformers.integrations import WandbCallback
 from trl import SFTConfig, SFTTrainer
 
@@ -143,6 +149,10 @@ class TrialResult:
     k_max: int
     tau: float
     lambda_ponder: float
+    halting_mass_scale: float
+    use_step_film: bool
+    film_rank: int
+    lambda_deep_supervision: float
     learning_rate: float
     steps_trained: Optional[int]
     eval_loss: Optional[float]
@@ -165,6 +175,10 @@ def parse_int_list(csv_vals: str) -> List[int]:
     return [int(x.strip()) for x in csv_vals.split(",") if x.strip()]
 
 
+def parse_bool_list(csv_vals: str) -> List[bool]:
+    return [x.strip().lower() == "true" for x in csv_vals.split(",") if x.strip()]
+
+
 def main():
     p = argparse.ArgumentParser(description="Sweep ACT hyperparameters (K_max, tau, lambda, LR).")
     p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
@@ -183,6 +197,9 @@ def main():
     p.add_argument("--tau", type=parse_float_list, default="0.95,0.98,0.99")
     p.add_argument("--lambda-ponder", type=parse_float_list, default="0.001,0.003,0.01")
     p.add_argument("--halting-mass-scale", type=parse_float_list, default="1.0")
+    p.add_argument("--use-step-film", type=parse_bool_list, default="false")
+    p.add_argument("--film-rank", type=parse_int_list, default="128")
+    p.add_argument("--lambda-deep-supervision", type=parse_float_list, default="0.0")
     p.add_argument("--lrs", type=parse_float_list, default="1e-4,5e-4,1e-3")
 
     # Trainer
@@ -260,13 +277,20 @@ def main():
 
     # Build full grid then optionally subsample
     full_grid = [
-        (K, t, l, hs, lr)
+        (K, t, l, hs, sf, fr, ds, lr)
         for K in args.kmax
         for t in args.tau
         for l in args.lambda_ponder
         for hs in args.halting_mass_scale
+        for sf in args.use_step_film
+        for fr in args.film_rank
+        for ds in args.lambda_deep_supervision
         for lr in args.lrs
     ]
+    print(f"Initial full grid size: {len(full_grid)}")
+    # Remove items where `sf` is False and `fr` is not 128
+    full_grid = [x for x in full_grid if not (x[4] == False and x[5] != 128)]
+    print(f"Total grid size: {len(full_grid)}")
     if args.sample_trials and args.sample_trials > 0 and args.sample_trials < len(full_grid):
         grid = random.sample(full_grid, args.sample_trials)
     else:
@@ -276,9 +300,9 @@ def main():
 
     results: List[TrialResult] = []
     idx = 0
-    for K, tau, lam, hs, lr in grid:
+    for K, tau, lam, hs, sf, fr, ds, lr in grid:
         idx += 1
-        run_name = f"K{K}-tau{tau}-lam{lam}-hs{hs}-lr{lr:g}"
+        run_name = f"K{K}-tau{tau}-lam{lam}-hs{hs}-sf{sf}-fr{fr}-ds{ds}-lr{lr:g}"
         out_dir = os.path.join(args.output_root, run_name)
         os.makedirs(out_dir, exist_ok=True)
         print("\n" + "=" * 80)
@@ -300,6 +324,9 @@ def main():
                         "tau": tau,
                         "lambda_ponder": lam,
                         "halting_mass_scale": hs,
+                        "use_step_film": sf,
+                        "film_rank": fr,
+                        "lambda_deep_supervision": ds,
                         "learning_rate": lr,
                         "hidden_size": args.hidden_size,
                         "intermediate_size": args.intermediate_size,
@@ -333,7 +360,14 @@ def main():
             cfg._attn_implementation = args.attn_impl
 
             model = RecursiveHaltingMistralForCausalLM(
-                cfg, k_max=K, tau=tau, lambda_ponder=lam, halting_mass_scale=hs
+                cfg,
+                k_max=K,
+                tau=tau,
+                lambda_ponder=lam,
+                halting_mass_scale=hs,
+                use_step_film=sf,
+                film_rank=fr,
+                lambda_deep_supervision=ds,
             ).to(device=device, dtype=(torch.bfloat16 if args.bf16 else torch.float32))
             if args.compile and hasattr(torch, "compile"):
                 try:
@@ -488,6 +522,10 @@ def main():
                     k_max=K,
                     tau=tau,
                     lambda_ponder=lam,
+                    halting_mass_scale=hs,
+                    use_step_film=sf,
+                    film_rank=fr,
+                    lambda_deep_supervision=ds,
                     learning_rate=lr,
                     steps_trained=steps_trained,
                     eval_loss=(float(loss) if loss is not None else None),
@@ -509,6 +547,10 @@ def main():
                     k_max=K,
                     tau=tau,
                     lambda_ponder=lam,
+                    halting_mass_scale=hs,
+                    use_step_film=sf,
+                    film_rank=fr,
+                    lambda_deep_supervision=ds,
                     learning_rate=lr,
                     steps_trained=None,
                     eval_loss=None,
@@ -550,6 +592,9 @@ def main():
                 "tau",
                 "lambda_ponder",
                 "halting_mass_scale",
+                "use_step_film",
+                "film_rank",
+                "lambda_deep_supervision",
                 "learning_rate",
                 "steps_trained",
                 "eval_loss",
@@ -573,7 +618,9 @@ def main():
     print("\nSearch complete.")
     for r in oks[:5]:
         print(
-            f"K={r.k_max} tau={r.tau} lam={r.lambda_ponder} halting_mass_scale={r.halting_mass_scale} lr={r.learning_rate:g} "
+            f"K={r.k_max} tau={r.tau} lam={r.lambda_ponder} halting_mass_scale={r.halting_mass_scale} "
+            f"use_step_film={r.use_step_film} film_rank={r.film_rank} lambda_deep_supervision={r.lambda_deep_supervision} "
+            f"lr={r.learning_rate:g} "
             f"eval_loss={r.eval_loss:.4f} ppl={(r.eval_ppl if r.eval_ppl is not None else float('nan')):.2f} "
             f"time={r.train_runtime_s:.1f}s"
         )
