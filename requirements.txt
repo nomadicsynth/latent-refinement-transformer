@@ -6,6 +6,7 @@ ipywidgets
 nbformat
 ninja
 packaging
+sentencepiece
 torch
 transformers
 trl
