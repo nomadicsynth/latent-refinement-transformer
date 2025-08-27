@@ -548,9 +548,9 @@ def main():
     print("\nSearch complete.")
     for r in oks[:5]:
         print(
-            f"K={r.k_max} tau={r.tau} lam={r.lambda_ponder} lr={r.learning_rate:g} "
+            f"K={r.k_max} tau={r.tau} lam={r.lambda_ponder} halting_mass_scale={r.halting_mass_scale} lr={r.learning_rate:g} "
             f"eval_loss={r.eval_loss:.4f} ppl={(r.eval_ppl if r.eval_ppl is not None else float('nan')):.2f} "
-            f"time={r.train_runtime_s:.1f}s dir={r.output_dir}"
+            f"time={r.train_runtime_s:.1f}s"
         )
 
 
