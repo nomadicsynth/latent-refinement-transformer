@@ -226,7 +226,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
                 shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
             )
             ponder = expected_steps.mean()
-            loss = ce + self.lambda_ponder * ponder
+            loss = ce + (self.lambda_ponder * ponder if self.training else 0.0)
 
             # Deep supervision (later steps heavier)
             if self.training and self.lambda_deep_supervision > 0.0 and len(ce_per_step) > 0:
