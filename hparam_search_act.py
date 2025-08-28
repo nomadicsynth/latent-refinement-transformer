@@ -240,12 +240,7 @@ def main():
     p.add_argument("--eval-samples", type=int, default=128)
 
     # Randomly sample a subset of the grid to cut total trials
-    p.add_argument(
-        "--sample-trials",
-        type=int,
-        default=0,
-        help="If >0, randomly sample this many unique trial combos from the full grid",
-    )
+    p.add_argument("--sample-trials", type=int, default=0, help="If >0, randomly sample this many unique trial combos from the full grid")
 
     # Output/logging
     p.add_argument("--use-wandb", action="store_true", default=False)
