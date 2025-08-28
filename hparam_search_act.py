@@ -163,10 +163,15 @@ class TrialResult:
     steps_trained: Optional[int]
     eval_loss: Optional[float]
     eval_ppl: Optional[float]
+    eval_mean_token_accuracy: Optional[float]
     best_eval_loss: Optional[float]
     best_eval_step: Optional[int]
+    best_eval_mean_token_accuracy: Optional[float]
+    best_eval_acc_step: Optional[int]
     best_train_loss: Optional[float]
     best_train_step: Optional[int]
+    best_train_mean_token_accuracy: Optional[float]
+    best_train_acc_step: Optional[int]
     train_runtime_s: float
     status: str
     error: Optional[str] = None
@@ -203,7 +208,7 @@ def main():
     p.add_argument("--tau", type=parse_float_list, default="0.95,0.98,0.99")
     p.add_argument("--lambda-ponder", type=parse_float_list, default="0.001,0.003,0.01")
     p.add_argument("--halting-mass-scale", type=parse_float_list, default="1.0")
-    p.add_argument("--use-step-film", type=parse_bool_list, default="false")
+    p.add_argument("--use-step-film", type=parse_bool_list, default="true")
     p.add_argument("--film-rank", type=parse_int_list, default="128")
     p.add_argument("--lambda-deep-supervision", type=parse_float_list, default="0.0")
     p.add_argument("--lrs", type=parse_float_list, default="1e-4,5e-4,1e-3")
@@ -448,6 +453,9 @@ def main():
             eval_act_expected = None
 
             out = trainer.train()
+
+            train_runtime = time.time() - start
+
             steps_trained = None
             try:
                 steps_trained = int(out.metrics.get("train_steps", 0))
@@ -477,12 +485,17 @@ def main():
                 eval_act_expected = None
             loss = metrics.get("eval_loss")
             ppl = float(math.exp(loss)) if loss is not None else None
+            eval_mean_token_accuracy = metrics.get("eval_mean_token_accuracy")
 
             # Scan log history for best eval/train losses and their steps
             best_eval_loss = None
             best_eval_step = None
+            best_eval_mean_token_accuracy = None
+            best_eval_acc_step = None
             best_train_loss = None
             best_train_step = None
+            best_train_mean_token_accuracy = None
+            best_train_acc_step = None
             try:
                 for rec in trainer.state.log_history:
                     if isinstance(rec, dict):
@@ -499,6 +512,22 @@ def main():
                             if v is not None and (best_train_loss is None or v < best_train_loss):
                                 best_train_loss = float(v)
                                 best_train_step = int(s) if s is not None else None
+                        if "eval_mean_token_accuracy" in rec:
+                            v = rec["eval_mean_token_accuracy"]
+                            s = rec.get("step", rec.get("global_step"))
+                            if v is not None and (
+                                best_eval_mean_token_accuracy is None or v > best_eval_mean_token_accuracy
+                            ):
+                                best_eval_mean_token_accuracy = float(v)
+                                best_eval_acc_step = int(s) if s is not None else None
+                        if "mean_token_accuracy" in rec:
+                            v = rec["mean_token_accuracy"]
+                            s = rec.get("step", rec.get("global_step"))
+                            if v is not None and (
+                                best_train_mean_token_accuracy is None or v > best_train_mean_token_accuracy
+                            ):
+                                best_train_mean_token_accuracy = float(v)
+                                best_train_acc_step = int(s) if s is not None else None
             except Exception:
                 pass
 
@@ -510,10 +539,18 @@ def main():
                     wandb.run.summary["final_eval_loss"] = loss if loss is not None else float("nan")
                     wandb.run.summary["best_eval_loss"] = best_eval_loss if best_eval_loss is not None else float("nan")
                     wandb.run.summary["best_eval_step"] = best_eval_step if best_eval_step is not None else -1
+                    if best_eval_mean_token_accuracy is not None:
+                        wandb.run.summary["best_eval_mean_token_accuracy"] = best_eval_mean_token_accuracy
+                    if best_eval_acc_step is not None:
+                        wandb.run.summary["best_eval_acc_step"] = best_eval_acc_step
                     if best_train_loss is not None:
                         wandb.run.summary["best_train_loss"] = best_train_loss
                     if best_train_step is not None:
                         wandb.run.summary["best_train_step"] = best_train_step
+                    if best_train_mean_token_accuracy is not None:
+                        wandb.run.summary["best_train_mean_token_accuracy"] = best_train_mean_token_accuracy
+                    if best_train_acc_step is not None:
+                        wandb.run.summary["best_train_acc_step"] = best_train_acc_step
                     # Add ACT metrics to summary so they appear in the final Run summary
                     if train_act_inner is not None:
                         wandb.run.summary["train_act_inner_steps"] = train_act_inner
@@ -539,11 +576,14 @@ def main():
                     steps_trained=steps_trained,
                     eval_loss=(float(loss) if loss is not None else None),
                     eval_ppl=ppl,
+                    eval_mean_token_accuracy=eval_mean_token_accuracy,
                     best_eval_loss=best_eval_loss,
                     best_eval_step=best_eval_step,
+                    best_eval_mean_token_accuracy=best_eval_mean_token_accuracy,
+                    best_eval_acc_step=best_eval_acc_step,
                     best_train_loss=best_train_loss,
                     best_train_step=best_train_step,
-                    train_runtime_s=time.time() - start,
+                    train_runtime_s=train_runtime,
                     status="ok",
                     output_dir=out_dir,
                 )
@@ -564,11 +604,16 @@ def main():
                     steps_trained=None,
                     eval_loss=None,
                     eval_ppl=None,
+                    eval_mean_token_accuracy=None,
                     best_eval_loss=None,
                     best_eval_step=None,
+                    best_eval_mean_token_accuracy=None,
+                    best_eval_acc_step=None,
                     best_train_loss=None,
                     best_train_step=None,
-                    train_runtime_s=time.time() - start,
+                    best_train_mean_token_accuracy=None,
+                    best_train_acc_step=None,
+                    train_runtime_s=train_runtime,
                     status="error",
                     error=err,
                     output_dir=out_dir,
@@ -608,10 +653,15 @@ def main():
                 "steps_trained",
                 "eval_loss",
                 "eval_ppl",
+                "eval_mean_token_accuracy",
                 "best_eval_loss",
                 "best_eval_step",
+                "best_eval_mean_token_accuracy",
+                "best_eval_acc_step",
                 "best_train_loss",
                 "best_train_step",
+                "best_train_mean_token_accuracy",
+                "best_train_acc_step",
                 "train_runtime_s",
                 "status",
                 "error",
@@ -631,6 +681,7 @@ def main():
             f"use_step_film={r.use_step_film} film_rank={r.film_rank} lambda_deep_supervision={r.lambda_deep_supervision} "
             f"lr={r.learning_rate:g} "
             f"eval_loss={r.eval_loss:.4f} ppl={(r.eval_ppl if r.eval_ppl is not None else float('nan')):.2f} "
+            f"eval_acc={(r.eval_mean_token_accuracy if r.eval_mean_token_accuracy is not None else float('nan')):.4f} "
             f"time={r.train_runtime_s:.1f}s"
         )
 
