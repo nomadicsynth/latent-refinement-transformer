@@ -229,10 +229,11 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             loss = ce + self.lambda_ponder * ponder
 
             # Deep supervision (later steps heavier)
-            if self.lambda_deep_supervision > 0.0 and len(ce_per_step) > 0:
-                T = len(ce_per_step)
-                alphas = torch.arange(1, T + 1, device=h.device, dtype=h.dtype)
-                alphas = alphas / alphas.sum()
+            if self.training and self.lambda_deep_supervision > 0.0 and len(ce_per_step) > 0:
+                # Use average halting weights across batch/seq to weight per-step CE
+                with torch.no_grad():
+                    w_mean = W_norm.mean(dim=(1, 2))  # [T]
+                    alphas = w_mean / (w_mean.sum() + 1e-8)
                 aux = sum(a * c for a, c in zip(alphas, ce_per_step))
                 loss = loss + self.lambda_deep_supervision * aux
 
