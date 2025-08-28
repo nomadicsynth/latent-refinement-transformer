@@ -573,6 +573,8 @@ def main():
                     best_eval_acc_step=best_eval_acc_step,
                     best_train_loss=best_train_loss,
                     best_train_step=best_train_step,
+                    best_train_mean_token_accuracy=best_train_mean_token_accuracy,
+                    best_train_acc_step=best_train_acc_step,
                     train_runtime_s=train_runtime,
                     status="ok",
                     output_dir=out_dir,
