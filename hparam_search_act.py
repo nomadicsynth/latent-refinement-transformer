@@ -66,17 +66,13 @@ class HaltingStatsCallback(TrainerCallback):
             if is_eval:
                 if inner_v is not None:
                     logs["eval_act_inner_steps"] = inner_v
-                    # logs["eval/act_inner_steps"] = inner_v
                 if exp_v is not None:
                     logs["eval_act_expected_steps"] = exp_v
-                    # logs["eval/act_expected_steps"] = exp_v
             else:
                 if inner_v is not None:
                     logs["act_inner_steps"] = inner_v
-                    # logs["train/act_inner_steps"] = inner_v
                 if exp_v is not None:
                     logs["act_expected_steps"] = exp_v
-                    # logs["train/act_expected_steps"] = exp_v
         except Exception:
             # Never break training due to telemetry
             pass
@@ -188,6 +184,17 @@ def parse_int_list(csv_vals: str) -> List[int]:
 
 def parse_bool_list(csv_vals: str) -> List[bool]:
     return [x.strip().lower() == "true" for x in csv_vals.split(",") if x.strip()]
+
+
+def _last_metric_from_logs(log_history, key: str):
+    # scan from newest to oldest
+    for rec in reversed(log_history):
+        if isinstance(rec, dict) and key in rec and rec[key] is not None:
+            try:
+                return float(rec[key])
+            except Exception:
+                return rec[key]
+    return None
 
 
 def main():
@@ -475,7 +482,16 @@ def main():
                 eval_act_expected = None
             loss = metrics.get("eval_loss")
             ppl = float(math.exp(loss)) if loss is not None else None
+
+            # Prefer returned metrics; fall back to latest logged value (no recompute)
             eval_mean_token_accuracy = metrics.get("eval_mean_token_accuracy")
+            if eval_mean_token_accuracy is None:
+                eval_mean_token_accuracy = _last_metric_from_logs(trainer.state.log_history, "eval_mean_token_accuracy")
+
+            # Uncomment if needed
+            # train_mean_token_accuracy = metrics.get("mean_token_accuracy")
+            # if train_mean_token_accuracy is None:
+            #     train_mean_token_accuracy = _last_metric_from_logs(trainer.state.log_history, "mean_token_accuracy")
 
             # Scan log history for best eval/train losses and their steps
             best_eval_loss = None
