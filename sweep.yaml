@@ -1,0 +1,40 @@
+name: act-ce-film-sweep
+project: science-llm
+method: bayes
+metric:
+  name: eval/mean_token_accuracy
+  goal: maximize
+parameters:
+  kmax: {values: [12, 16]}
+  tau: {values: [0.97, 0.98, 0.99]}
+  lambda-ponder:
+    min: 0.001
+    max: 0.02
+    distribution: log_uniform_values
+  halting-mass-scale:
+    min: 0.8
+    max: 1.25
+    distribution: log_uniform_values
+  film-rank: {values: [256, 512, 768]}
+  lambda-deep-supervision:
+    min: 0.05
+    max: 0.2
+    distribution: log_uniform_values
+  lrs: {values: [1e-3]}
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --dataset-path
+  - "./preprocessed_dataset_34954_3492"
+  - --output-root
+  - "./results/hparam_act"
+  - --csv-path
+  - "./results/hparam_act/results-act-ce-film-wandb-sweep-tmp.csv"
+  - --use-wandb
+  - --sample-trials
+  - "1"
+  - --group
+  - act-ce-film-sweep
+  - ${args}
+program: hparam_search_act.py
