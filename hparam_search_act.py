@@ -227,12 +227,7 @@ def main():
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--max-steps", type=int, default=1000)
     p.add_argument("--dataset-num-proc", type=int, default=4)
-    p.add_argument(
-        "--grad-checkpointing",
-        action="store_true",
-        default=False,
-        help="Enable gradient checkpointing (slower but saves VRAM)",
-    )
+    p.add_argument("--grad-checkpointing", action="store_true", default=False, help="Enable gradient checkpointing (slower but saves VRAM)")
     p.add_argument("--compile", action="store_true", default=False, help="Use torch.compile for potential speedups")
     p.add_argument("--early-stopping", action="store_true", default=False, help="Enable early stopping on eval_loss")
     p.add_argument("--early-stopping-patience", type=int, default=3)
