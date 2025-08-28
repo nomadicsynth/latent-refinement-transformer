@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 from typing import Optional, Tuple, Union
 
 import torch
@@ -75,6 +76,11 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         self.lambda_ponder = lambda_ponder
         self.halting_mass_scale = halting_mass_scale
         self.stop_head = StopHead(config.hidden_size)
+        # Initialize stop bias so initial p_t ~ 0.55 (gentle early-halt prior)
+        with torch.no_grad():
+            b = math.log(0.55 / 0.45)
+            if hasattr(self.stop_head, "proj") and hasattr(self.stop_head.proj, "bias"):
+                self.stop_head.proj.bias.fill_(b)
         self.use_step_film = use_step_film
         self.lambda_deep_supervision = lambda_deep_supervision
 
