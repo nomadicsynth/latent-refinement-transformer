@@ -163,7 +163,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             logits_list.append(logits_t)
 
             # Optional: per-step CE to encourage refinement
-            if labels is not None and self.k_max > 1 and self.lambda_deep_supervision > 0.0:
+            if labels is not None and self.training and self.k_max > 1 and self.lambda_deep_supervision > 0.0:
                 shift_logits_t = logits_t[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
                 ce_t = CrossEntropyLoss(ignore_index=-100)(
