@@ -229,7 +229,17 @@ def main():
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--bf16", action="store_true", default=True)
     p.add_argument("--no-bf16", dest="bf16", action="store_false")
-    p.add_argument("--max-length", type=int, default=384)
+    p.add_argument(
+        "--max-length",
+        type=int,
+        default=1024,  # was 384
+        help=(
+            "Sequence length cap for batching/collation. "
+            "With skip_preprocessing=True and a tokenized/packed dataset, "
+            "this truncates sequences to this length. "
+            "Set to 32768 to use full packed 32K."
+        ),
+    )
     p.add_argument("--eval-steps", type=int, default=100)
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--max-steps", type=int, default=1000)
