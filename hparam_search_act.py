@@ -253,8 +253,8 @@ def main():
     p.add_argument("--no-packing", dest="packing", action="store_false")
 
     # Data caps
-    p.add_argument("--train-samples", type=int, default=30000)
-    p.add_argument("--eval-samples", type=int, default=128)
+    p.add_argument("--train-samples", type=int, default=0)
+    p.add_argument("--eval-samples", type=int, default=0)
 
     # Randomly sample a subset of the grid to cut total trials
     p.add_argument("--sample-trials", type=int, default=0, help="If >0, randomly sample this many unique trial combos from the full grid")
@@ -285,9 +285,9 @@ def main():
     dataset = load_from_disk(args.dataset_path)
     train_ds = dataset["train"]
     eval_ds = dataset.get("test")
-    if len(train_ds) > args.train_samples:
+    if args.train_samples > 0 and len(train_ds) > args.train_samples:
         train_ds = train_ds.select(range(args.train_samples))
-    if eval_ds is not None and len(eval_ds) > args.eval_samples:
+    if args.eval_samples > 0 and eval_ds is not None and len(eval_ds) > args.eval_samples:
         eval_ds = eval_ds.select(range(args.eval_samples))
 
     tok = AutoTokenizer.from_pretrained(args.tokenizer_name)
