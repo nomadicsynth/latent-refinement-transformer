@@ -1,0 +1,51 @@
+name: act-lr-sweep-1
+project: science-llm
+method: bayes
+metric:
+  name: eval/mean_token_accuracy
+  goal: maximize
+parameters:
+  lrs:
+    min: 0.0001
+    max: 0.001
+    distribution: log_uniform_values
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --dataset-path
+  - "./preprocessed_dataset_83208_9318"
+  - --output-root
+  - "./results/hparam_act"
+  - --csv-path
+  - "./results/hparam_act/results-act-ce-film-wandb-sweep-tmp.csv"
+  - --use-wandb
+  - --group
+  - act-lr-sweep
+  - --max-steps
+  - "1000"
+  - --eval-steps
+  - "50"
+  - --eval-samples
+  - "500"
+  - --max-length
+  - "3072"
+  - --grad-checkpointing
+  - --per-device-train-batch-size
+  - "2"
+  - --grad-accum
+  - "8"
+  - --kmax
+  - "8"
+  - --tau
+  - "0.999"
+  - --lambda-ponder
+  - "0.0025"
+  - --halting-mass-scale
+  - "1.0"
+  - --film-rank
+  - "512"
+  - --lambda-deep-supervision
+  - "0.06"
+  - ${args}
+program: hparam_search_act.py
