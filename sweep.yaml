@@ -1,48 +1,39 @@
-name: act-ce-film-sweep-3
+name: act-ce-film-sweep-4
 project: science-llm
 method: bayes
 metric:
   name: eval/mean_token_accuracy
   goal: maximize
 parameters:
-  kmax: {values: [6, 8, 12]}
-  tau: {values: [0.98, 0.99, 0.999]}
-  lambda-ponder:
-    min: 0.0008
-    max: 0.005
-    distribution: log_uniform_values
+  kmax: {values: [8]}
+  tau: {values: [0.999]}
+  lambda-ponder: {values: [0.0025]}
   halting-mass-scale: {values: [1.0]}
-  film-rank: {values: [256, 512]}
-  lambda-deep-supervision:
-    min: 0.01
-    max: 0.1
-    distribution: log_uniform_values
-  lrs:
-    min: 0.0005
-    max: 0.005
-    distribution: log_uniform_values
-  grad-accum: {values: [1, 2, 4, 8]}
+  film-rank: {values: [512]}
+  lambda-deep-supervision: {values: [0.06]}
+  lrs: {values: [0.0005]}
+  grad-accum: {values: [4]}
 command:
   - ${env}
   - ${interpreter}
   - ${program}
   - --dataset-path
-  - "./preprocessed_dataset_34954_3492"
+  - "./preprocessed_dataset_83208_9318"
   - --output-root
   - "./results/hparam_act"
   - --csv-path
   - "./results/hparam_act/results-act-ce-film-wandb-sweep-tmp.csv"
   - --use-wandb
   - --group
-  - act-ce-film-sweep-3
+  - act-ce-film-sweep-4
   - --max-steps
-  - "5000"
+  - "500"
   - --eval-steps
-  - "200"
+  - "50"
   - --eval-samples
-  - "1000"
+  - "500"
   - --max-length
-  - "4096"
+  - "2048"
   - --grad-checkpointing
   - --per-device-train-batch-size
   - "2"
