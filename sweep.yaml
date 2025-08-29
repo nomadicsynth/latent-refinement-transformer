@@ -1,26 +1,27 @@
-name: act-ce-film-sweep
+name: act-ce-film-sweep-3
 project: science-llm
 method: bayes
 metric:
   name: eval/mean_token_accuracy
   goal: maximize
 parameters:
-  kmax: {values: [12, 16]}
-  tau: {values: [0.97, 0.98, 0.99]}
+  kmax: {values: [6, 8, 12]}
+  tau: {values: [0.98, 0.99, 0.999]}
   lambda-ponder:
-    min: 0.001
-    max: 0.02
+    min: 0.0008
+    max: 0.005
     distribution: log_uniform_values
-  halting-mass-scale:
-    min: 0.8
-    max: 1.25
-    distribution: log_uniform_values
-  film-rank: {values: [256, 512, 768]}
+  halting-mass-scale: {values: [1.0]}
+  film-rank: {values: [256, 512]}
   lambda-deep-supervision:
-    min: 0.05
-    max: 0.2
+    min: 0.01
+    max: 0.1
     distribution: log_uniform_values
-  lrs: {values: [1e-3]}
+  lrs:
+    min: 0.0005
+    max: 0.005
+    distribution: log_uniform_values
+  grad-accum: {values: [1, 2, 4, 8]}
 command:
   - ${env}
   - ${interpreter}
@@ -32,9 +33,18 @@ command:
   - --csv-path
   - "./results/hparam_act/results-act-ce-film-wandb-sweep-tmp.csv"
   - --use-wandb
-  - --sample-trials
-  - "1"
   - --group
-  - act-ce-film-sweep
+  - act-ce-film-sweep-3
+  - --max-steps
+  - "5000"
+  - --eval-steps
+  - "200"
+  - --eval-samples
+  - "1000"
+  - --max-length
+  - "4096"
+  - --grad-checkpointing
+  - --per-device-train-batch-size
+  - "2"
   - ${args}
 program: hparam_search_act.py
