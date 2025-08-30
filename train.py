@@ -290,47 +290,75 @@ def main():
 
     # Save/Checkpoint strategy
     save_strategy = args.save_strategy
-    sft = SFTConfig(
-        output_dir=args.output_dir,
-        eval_strategy="steps" if eval_ds is not None else "no",
-        eval_steps=args.eval_steps,
-        eval_on_start=False,
-        learning_rate=args.learning_rate,
-        lr_scheduler_type="cosine",
-        warmup_ratio=args.warmup_ratio,
-        max_grad_norm=args.max_grad_norm,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=args.grad_checkpointing,
-        max_steps=(args.max_steps if args.max_steps and args.max_steps > 0 else -1),
-        num_train_epochs=(args.num_train_epochs if (not args.max_steps) and args.num_train_epochs > 0 else 3),
-        weight_decay=args.weight_decay,
-        completion_only_loss=False,
-        bf16=args.bf16,
-        bf16_full_eval=args.bf16,
-        max_length=args.max_length,
-        logging_strategy="steps",
-        logging_steps=args.logging_steps,
-        save_strategy=save_strategy,
-        save_steps=args.save_steps,
-        save_total_limit=(args.save_total_limit if args.save_total_limit and args.save_total_limit > 0 else None),
-        save_safetensors=args.save_safetensors,
-        load_best_model_at_end=args.load_best_model_at_end,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
-        report_to=report_to,
-        dataset_num_proc=args.dataset_num_proc,
-        eos_token=tok.eos_token,
-        pad_token=tok.pad_token,
-        packing=args.packing,
-        dataset_kwargs={"skip_preprocessing": True},
-        use_liger_kernel=True,
-        run_name=(
-            args.run_name
-            or f"K{args.k_max}-tau{args.tau}-lam{args.lambda_ponder}-hs{args.halting_mass_scale}-sf{args.use_step_film}-fr{args.film_rank}-ds{args.lambda_deep_supervision}-lr{args.learning_rate:g}"
-        ),
-    )
+
+    # Build SFTConfig kwargs with conditional population
+    sft_kwargs = {
+        "output_dir": args.output_dir,
+        "eval_steps": args.eval_steps,
+        "eval_on_start": False,
+        "learning_rate": args.learning_rate,
+        "lr_scheduler_type": "cosine",
+        "warmup_ratio": args.warmup_ratio,
+        "max_grad_norm": args.max_grad_norm,
+        "per_device_train_batch_size": args.per_device_train_batch_size,
+        "per_device_eval_batch_size": args.per_device_eval_batch_size,
+        "gradient_accumulation_steps": args.grad_accum,
+        "gradient_checkpointing": args.grad_checkpointing,
+        "weight_decay": args.weight_decay,
+        "completion_only_loss": False,
+        "bf16": args.bf16,
+        "bf16_full_eval": args.bf16,
+        "max_length": args.max_length,
+        "logging_strategy": "steps",
+        "logging_steps": args.logging_steps,
+        "save_strategy": save_strategy,
+        "save_steps": args.save_steps,
+        "save_safetensors": args.save_safetensors,
+        "load_best_model_at_end": args.load_best_model_at_end,
+        "metric_for_best_model": "eval_loss",
+        "greater_is_better": False,
+        "report_to": report_to,
+        "dataset_num_proc": args.dataset_num_proc,
+        "eos_token": tok.eos_token,
+        "pad_token": tok.pad_token,
+        "packing": args.packing,
+        "dataset_kwargs": {"skip_preprocessing": True},
+        "use_liger_kernel": True,
+    }
+
+    # Conditional: evaluation strategy depends on eval dataset presence
+    if eval_ds is not None:
+        sft_kwargs["eval_strategy"] = "steps"
+    else:
+        sft_kwargs["eval_strategy"] = "no"
+
+    # Conditional: max steps vs epochs
+    if args.max_steps and args.max_steps > 0:
+        sft_kwargs["max_steps"] = args.max_steps
+    else:
+        sft_kwargs["max_steps"] = -1
+
+    if (not args.max_steps) and args.num_train_epochs > 0:
+        sft_kwargs["num_train_epochs"] = args.num_train_epochs
+    else:
+        sft_kwargs["num_train_epochs"] = 3
+
+    # Conditional: save_total_limit may be disabled with 0/None
+    if args.save_total_limit and args.save_total_limit > 0:
+        sft_kwargs["save_total_limit"] = args.save_total_limit
+    else:
+        sft_kwargs["save_total_limit"] = None
+
+    # Conditional: run name provided or constructed
+    if args.run_name:
+        sft_kwargs["run_name"] = args.run_name
+    else:
+        sft_kwargs["run_name"] = (
+            f"K{args.k_max}-tau{args.tau}-lam{args.lambda_ponder}-hs{args.halting_mass_scale}-"
+            f"sf{args.use_step_film}-fr{args.film_rank}-ds{args.lambda_deep_supervision}-lr{args.learning_rate:g}"
+        )
+
+    sft = SFTConfig(**sft_kwargs)
 
     callbacks = [HaltingStatsCallback()]
     if args.early_stopping:
