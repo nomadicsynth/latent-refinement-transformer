@@ -379,7 +379,7 @@ def main():
     else:
         sft_kwargs["max_steps"] = -1
 
-    if (not args.max_steps) and args.num_train_epochs > 0:
+    if args.max_steps == -1 and args.num_train_epochs > 0:
         sft_kwargs["num_train_epochs"] = args.num_train_epochs
     else:
         sft_kwargs["num_train_epochs"] = 3
