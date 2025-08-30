@@ -120,12 +120,17 @@ def _last_metric_from_logs(log_history, key: str):
 
 def main():
     p = argparse.ArgumentParser(description="Train a single ACT configuration (no sweep).")
-    # Data/model
-    p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
+    # Model
     p.add_argument("--tokenizer-name", default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--output-dir", default="./results/act_single")
 
-    # Small model config (same as sweep defaults)
+    # Dataset
+    p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
+    p.add_argument("--packing", action="store_true", default=True)
+    p.add_argument("--skip-preprocessing", action="store_true", default=True)
+    p.add_argument("--no-packing", dest="packing", action="store_false")
+
+    # Small model config
     p.add_argument("--hidden-size", type=int, default=768)
     p.add_argument("--intermediate-size", type=int, default=3688)
     p.add_argument("--num-layers", type=int, default=2)
@@ -164,8 +169,6 @@ def main():
     p.add_argument("--early-stopping", action="store_true", default=False)
     p.add_argument("--early-stopping-patience", type=int, default=3)
     p.add_argument("--early-stopping-threshold", type=float, default=0.0)
-    p.add_argument("--packing", action="store_true", default=True)
-    p.add_argument("--no-packing", dest="packing", action="store_false")
     p.add_argument("--use-liger-kernel", action="store_true", default=True)
     p.add_argument("--no-use-liger-kernel", dest="use_liger_kernel", action="store_false")
 
