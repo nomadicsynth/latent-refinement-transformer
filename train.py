@@ -163,7 +163,7 @@ def main():
     p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
     p.add_argument("--packing", action="store_true", default=True)
     p.add_argument("--no-packing", dest="packing", action="store_false")
-    p.add_argument("--skip-preprocessing", action="store_true", default=True)
+    p.add_argument("--skip-prepare-dataset", action="store_true", default=True)
     p.add_argument("--train-samples", type=int, default=0)
     p.add_argument("--eval-samples", type=int, default=0)
 
@@ -330,7 +330,7 @@ def main():
 
     dataset_kwargs = {}
     if args.skip_preprocessing:
-        dataset_kwargs["skip_preprocessing"] = True
+        dataset_kwargs["skip_prepare_dataset"] = True
 
     # Build SFTConfig kwargs with conditional population
     sft_kwargs = {
