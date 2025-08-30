@@ -161,8 +161,9 @@ def main():
     p.add_argument("--bf16", action="store_true", default=True)
     p.add_argument("--no-bf16", dest="bf16", action="store_false")
     p.add_argument("--max-length", type=int, default=1024)
-    p.add_argument("--eval-steps", type=int, default=100)
-    p.add_argument("--logging-steps", type=int, default=50)
+    p.add_argument("--eval-steps", type=float, default=100)
+    p.add_argument("--eval-on-start", action="store_true", default=False)
+    p.add_argument("--logging-steps", type=float, default=50)
     p.add_argument("--max-steps", type=int, default=-1, help="If set to a positive number, the total number of training steps to perform. Overrides `num_train_epochs`. For a dataset smaller than `max_steps`, training is reiterated through the dataset until `max_steps` is reached.")
     p.add_argument("--num-train-epochs", type=int, default=3, help="Used only if --max-steps=-1")
     p.add_argument("--dataset-num-proc", type=int, default=4)
@@ -183,9 +184,9 @@ def main():
     )
     p.add_argument(
         "--save-steps",
-        type=int,
+        type=float,
         default=100,
-        help="Save a checkpoint every N steps when --save-strategy=steps.",
+        help="Save a checkpoint every N steps when --save-strategy=steps. If float < 1, it will be treated as a fraction of the total steps.",
     )
     p.add_argument(
         "--save-total-limit",
@@ -194,17 +195,15 @@ def main():
         help="Maximum number of checkpoints to keep (0 disables limit). Older checkpoints are deleted.",
     )
     p.add_argument(
-        "--save-safetensors",
-        action="store_true",
-        default=True,
-        help="Save weights in safetensors format.",
-    )
-    p.add_argument("--no-save-safetensors", dest="save_safetensors", action="store_false")
-    p.add_argument(
         "--load-best-model-at-end",
         action="store_true",
         default=False,
         help="After training, load the best checkpoint according to metric_for_best_model.",
+    )
+    p.add_argument(
+        "--metric-for-best-model",
+        default="eval_loss",
+        help="Metric to use for selecting the best model.",
     )
     p.add_argument(
         "--save-final-model",
@@ -302,7 +301,7 @@ def main():
     sft_kwargs = {
         "output_dir": args.output_dir,
         "eval_steps": args.eval_steps,
-        "eval_on_start": False,
+        "eval_on_start": args.eval_on_start,
         "learning_rate": args.learning_rate,
         "lr_scheduler_type": "cosine",
         "warmup_ratio": args.warmup_ratio,
@@ -320,9 +319,8 @@ def main():
         "logging_steps": args.logging_steps,
         "save_strategy": save_strategy,
         "save_steps": args.save_steps,
-        "save_safetensors": args.save_safetensors,
         "load_best_model_at_end": args.load_best_model_at_end,
-        "metric_for_best_model": "eval_loss",
+        "metric_for_best_model": args.metric_for_best_model,
         "greater_is_better": False,
         "report_to": report_to,
         "dataset_num_proc": args.dataset_num_proc,
@@ -430,10 +428,10 @@ def main():
     # Optionally save final model (post-eval to include best model if reloaded)
     if args.save_final_model:
         try:
-            print(f"Saving final model and tokenizer to {args.output_dir} ...")
-            trainer.save_model(args.output_dir)
+            print(f"Saving final model and tokenizer to {args.output_dir + '/final_model'} ...")
+            trainer.save_model(args.output_dir + '/final_model')
             try:
-                tok.save_pretrained(args.output_dir)
+                tok.save_pretrained(args.output_dir + '/final_model')
             except Exception:
                 pass
         except Exception as e:
