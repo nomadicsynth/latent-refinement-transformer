@@ -127,8 +127,10 @@ def main():
     # Dataset
     p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
     p.add_argument("--packing", action="store_true", default=True)
-    p.add_argument("--skip-preprocessing", action="store_true", default=True)
     p.add_argument("--no-packing", dest="packing", action="store_false")
+    p.add_argument("--skip-preprocessing", action="store_true", default=True)
+    p.add_argument("--train-samples", type=int, default=0)
+    p.add_argument("--eval-samples", type=int, default=0)
 
     # Small model config
     p.add_argument("--hidden-size", type=int, default=768)
@@ -161,8 +163,8 @@ def main():
     p.add_argument("--max-length", type=int, default=1024)
     p.add_argument("--eval-steps", type=int, default=100)
     p.add_argument("--logging-steps", type=int, default=50)
-    p.add_argument("--max-steps", type=int, default=1000, help="If set to a positive number, the total number of training steps to perform. Overrides `num_train_epochs`. For a dataset smaller than `max_steps`, training is reiterated through the dataset until `max_steps` is reached.")
-    p.add_argument("--num-train-epochs", type=int, default=0, help="Used only if --max-steps=-1")
+    p.add_argument("--max-steps", type=int, default=-1, help="If set to a positive number, the total number of training steps to perform. Overrides `num_train_epochs`. For a dataset smaller than `max_steps`, training is reiterated through the dataset until `max_steps` is reached.")
+    p.add_argument("--num-train-epochs", type=int, default=3, help="Used only if --max-steps=-1")
     p.add_argument("--dataset-num-proc", type=int, default=4)
     p.add_argument("--grad-checkpointing", action="store_true", default=False)
     p.add_argument("--compile", action="store_true", default=False)
@@ -211,10 +213,6 @@ def main():
         help="After training/eval, save the final model to output_dir.",
     )
     p.add_argument("--no-save-final-model", dest="save_final_model", action="store_false")
-
-    # Data caps
-    p.add_argument("--train-samples", type=int, default=0)
-    p.add_argument("--eval-samples", type=int, default=0)
 
     # W&B
     p.add_argument("--use-wandb", action="store_true", default=False)
