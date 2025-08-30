@@ -3,3 +3,4 @@ results/
 wandb/
 preprocessed_dataset_*/
 __pycache__
+.vscode/
