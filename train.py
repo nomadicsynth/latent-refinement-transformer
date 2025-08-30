@@ -400,7 +400,11 @@ def main():
 
     sft = SFTConfig(**sft_kwargs)
 
-    callbacks = [HaltingStatsCallback()]
+    callbacks = []
+    # Skip ACT telemetry when using Liger kernels (it breaks inner/expected steps)
+    if not args.use_liger_kernel:
+        callbacks.append(HaltingStatsCallback())
+
     if args.early_stopping:
         callbacks.append(
             EarlyStoppingCallback(
@@ -409,7 +413,11 @@ def main():
             )
         )
     if args.use_wandb:
-        callbacks.append(ACTWandbCallback())
+        if not args.use_liger_kernel:
+            callbacks.append(ACTWandbCallback())
+        else:
+            # Use plain WandB logging without ACT metric injection
+            callbacks.append(WandbCallback())
 
     trainer = SFTTrainer(
         model=model,
@@ -455,10 +463,12 @@ def main():
         print(f"eval_loss={loss:.4f} ppl={(ppl if ppl is not None else float('nan')):.2f}")
     if eval_mean_token_accuracy is not None:
         print(f"eval_mean_token_accuracy={float(eval_mean_token_accuracy):.4f}")
-    if train_act_inner is not None or train_act_expected is not None:
-        print(f"train_act_inner_steps={train_act_inner} train_act_expected_steps={train_act_expected}")
-    if eval_act_inner is not None or eval_act_expected is not None:
-        print(f"eval_act_inner_steps={eval_act_inner} eval_act_expected_steps={eval_act_expected}")
+    # Suppress ACT telemetry prints when Liger kernels are enabled
+    if not args.use_liger_kernel:
+        if train_act_inner is not None or train_act_expected is not None:
+            print(f"train_act_inner_steps={train_act_inner} train_act_expected_steps={train_act_expected}")
+        if eval_act_inner is not None or eval_act_expected is not None:
+            print(f"eval_act_inner_steps={eval_act_inner} eval_act_expected_steps={eval_act_expected}")
 
     # Optionally save final model (post-eval to include best model if reloaded)
     if args.save_final_model:
