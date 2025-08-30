@@ -3,10 +3,14 @@ datasets
 flash-attn
 ipykernel
 ipywidgets
+matplotlib
 nbformat
 ninja
 packaging
+pandas
+scipy
 sentencepiece
+statsmodels
 torch
 tqdm
 transformers
