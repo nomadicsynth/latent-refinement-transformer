@@ -45,7 +45,7 @@ def main():
         raise SystemExit("Could not find an accuracy column like 'best_eval_mean_token_accuracy' or 'eval/mean_token_accuracy'.")
 
     # Pick learning rate column
-    lr_col = pick_first_present(df, ["learning-rate", "learning_rate", "lrs"])
+    lr_col = pick_first_present(df, ["learning_rate", "learning-rate", "lrs"])
     if lr_col is None:
         raise SystemExit("Could not find a learning rate column like 'learning-rate', 'learning_rate', or 'lrs'.")
 
@@ -53,7 +53,9 @@ def main():
     df = df[[lr_col, acc_col]].copy()
     df[lr_col] = pd.to_numeric(df[lr_col], errors="coerce")
     df[acc_col] = pd.to_numeric(df[acc_col], errors="coerce")
-    df = df.dropna().query(f"{lr_col} > 0")
+    # Avoid pd.DataFrame.query() because names like "learning-rate" break it.
+    df = df.dropna(subset=[lr_col, acc_col])
+    df = df[df[lr_col] > 0]
 
     # Aggregate duplicates per lr (median is robust)
     grouped = df.groupby(lr_col, as_index=False)[acc_col].median()
