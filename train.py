@@ -329,7 +329,7 @@ def main():
     save_strategy = args.save_strategy
 
     dataset_kwargs = {}
-    if args.skip_preprocessing:
+    if args.skip_prepare_dataset:
         dataset_kwargs["skip_prepare_dataset"] = True
 
     # Build SFTConfig kwargs with conditional population
