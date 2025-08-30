@@ -3,6 +3,7 @@ datasets
 flash-attn
 ipykernel
 ipywidgets
+liger-kernel
 matplotlib
 nbformat
 ninja

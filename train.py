@@ -280,7 +280,7 @@ def main():
         pad_token=tok.pad_token,
         packing=args.packing,
         dataset_kwargs={"skip_preprocessing": True},
-        use_liger_kernel=False,  # Causes a crash. Haven't investigated why.
+        use_liger_kernel=True,
         run_name=(
             args.run_name
             or f"K{args.k_max}-tau{args.tau}-lam{args.lambda_ponder}-hs{args.halting_mass_scale}-sf{args.use_step_film}-fr{args.film_rank}-ds{args.lambda_deep_supervision}-lr{args.learning_rate:g}"
