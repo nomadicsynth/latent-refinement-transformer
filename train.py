@@ -207,7 +207,7 @@ def main():
     p.add_argument("--early-stopping", action="store_true", default=False)
     p.add_argument("--early-stopping-patience", type=int, default=3)
     p.add_argument("--early-stopping-threshold", type=float, default=0.0)
-    p.add_argument("--use-liger-kernel", action="store_true", default=True)
+    p.add_argument("--use-liger-kernel", action="store_true", default=False)
     p.add_argument("--no-use-liger-kernel", dest="use_liger_kernel", action="store_false")
 
     # Saving / checkpoints
