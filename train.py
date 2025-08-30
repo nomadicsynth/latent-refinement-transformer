@@ -362,6 +362,7 @@ def main():
         "eos_token": tok.eos_token,
         "pad_token": tok.pad_token,
         "packing": args.packing,
+        "eval_packing": args.packing,
         "dataset_kwargs": dataset_kwargs,
         "use_liger_kernel": args.use_liger_kernel,
     }
