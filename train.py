@@ -200,7 +200,7 @@ def main():
     p.add_argument("--eval-on-start", action="store_true", default=False)
     p.add_argument("--logging-steps", type=float, default=50)
     p.add_argument("--max-steps", type=int, default=-1, help="If set to a positive number, the total number of training steps to perform. Overrides `num_train_epochs`. For a dataset smaller than `max_steps`, training is reiterated through the dataset until `max_steps` is reached.")
-    p.add_argument("--num-train-epochs", type=int, default=3, help="Used only if --max-steps=-1")
+    p.add_argument("--num-train-epochs", type=float, default=3, help="Used only if --max-steps=-1")
     p.add_argument("--dataset-num-proc", type=int, default=4)
     p.add_argument("--grad-checkpointing", action="store_true", default=False)
     p.add_argument("--compile", action="store_true", default=False)
