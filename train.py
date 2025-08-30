@@ -167,6 +167,46 @@ def main():
     p.add_argument("--packing", action="store_true", default=True)
     p.add_argument("--no-packing", dest="packing", action="store_false")
 
+    # Saving / checkpoints
+    p.add_argument(
+        "--save-strategy",
+        choices=["no", "steps", "epoch"],
+        default="no",
+        help="Checkpoint saving strategy. 'no' disables checkpointing.",
+    )
+    p.add_argument(
+        "--save-steps",
+        type=int,
+        default=100,
+        help="Save a checkpoint every N steps when --save-strategy=steps.",
+    )
+    p.add_argument(
+        "--save-total-limit",
+        type=int,
+        default=0,
+        help="Maximum number of checkpoints to keep (0 disables limit). Older checkpoints are deleted.",
+    )
+    p.add_argument(
+        "--save-safetensors",
+        action="store_true",
+        default=True,
+        help="Save weights in safetensors format.",
+    )
+    p.add_argument("--no-save-safetensors", dest="save_safetensors", action="store_false")
+    p.add_argument(
+        "--load-best-model-at-end",
+        action="store_true",
+        default=False,
+        help="After training, load the best checkpoint according to metric_for_best_model.",
+    )
+    p.add_argument(
+        "--save-final-model",
+        action="store_true",
+        default=True,
+        help="After training/eval, save the final model to output_dir.",
+    )
+    p.add_argument("--no-save-final-model", dest="save_final_model", action="store_false")
+
     # Data caps
     p.add_argument("--train-samples", type=int, default=0)
     p.add_argument("--eval-samples", type=int, default=0)
@@ -248,7 +288,8 @@ def main():
         trainable_params_hr = str(trainable_params)
     print(f"Trainable parameters: {trainable_params} ({trainable_params_hr})")
 
-    save_strategy = "no"
+    # Save/Checkpoint strategy
+    save_strategy = args.save_strategy
     sft = SFTConfig(
         output_dir=args.output_dir,
         eval_strategy="steps" if eval_ds is not None else "no",
@@ -272,6 +313,10 @@ def main():
         logging_strategy="steps",
         logging_steps=args.logging_steps,
         save_strategy=save_strategy,
+        save_steps=args.save_steps,
+        save_total_limit=(args.save_total_limit if args.save_total_limit and args.save_total_limit > 0 else None),
+        save_safetensors=args.save_safetensors,
+        load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         report_to=report_to,
@@ -346,6 +391,18 @@ def main():
         print(f"train_act_inner_steps={train_act_inner} train_act_expected_steps={train_act_expected}")
     if eval_act_inner is not None or eval_act_expected is not None:
         print(f"eval_act_inner_steps={eval_act_inner} eval_act_expected_steps={eval_act_expected}")
+
+    # Optionally save final model (post-eval to include best model if reloaded)
+    if args.save_final_model:
+        try:
+            print(f"Saving final model and tokenizer to {args.output_dir} ...")
+            trainer.save_model(args.output_dir)
+            try:
+                tok.save_pretrained(args.output_dir)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"WARNING: Failed to save final model: {e}")
 
 if __name__ == "__main__":
     try:
