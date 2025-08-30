@@ -58,6 +58,41 @@ class HaltingStatsCallback(TrainerCallback):
                 if exp_v is not None:
                     logs["act_expected_steps"] = exp_v
         except Exception:
+            # Never break training due to telemetry
+            pass
+
+        return control
+
+    def on_evaluate(self, args, state: TrainerState, control: TrainerControl, metrics=None, **kwargs):
+        # Also inject ACT metrics into the eval metrics dict
+        model = kwargs.get("model")
+        if metrics is None or model is None:
+            return control
+        try:
+            inner_v, exp_v = self._get_act_stats(model)
+            if inner_v is not None:
+                metrics["eval_act_inner_steps"] = inner_v
+                # metrics["eval/act_inner_steps"] = inner_v
+            if exp_v is not None:
+                metrics["eval_act_expected_steps"] = exp_v
+                # metrics["eval/act_expected_steps"] = exp_v
+        except Exception:
+            pass
+        return control
+
+    def on_train_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        # Try to inject final train ACT metrics into train summary if metrics dict is available.
+        model = kwargs.get("model")
+        metrics = kwargs.get("metrics")
+        if model is None or not isinstance(metrics, dict):
+            return control
+        try:
+            inner_v, exp_v = self._get_act_stats(model)
+            if inner_v is not None:
+                metrics["train_act_inner_steps"] = inner_v
+            if exp_v is not None:
+                metrics["train_act_expected_steps"] = exp_v
+        except Exception:
             pass
         return control
 
@@ -119,7 +154,7 @@ def _last_metric_from_logs(log_history, key: str):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Train a single ACT configuration (no sweep).")
+    p = argparse.ArgumentParser(description="Train an ACT model.")
     # Model
     p.add_argument("--tokenizer-name", default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--output-dir", default="./results/act_single")
@@ -143,7 +178,7 @@ def main():
     # ACT params
     p.add_argument("--k-max", type=int, default=8)
     p.add_argument("--tau", type=float, default=0.999)
-    p.add_argument("--lambda-ponder", type=float, default=0.00251)
+    p.add_argument("--lambda-ponder", type=float, default=0.0025)
     p.add_argument("--halting-mass-scale", type=float, default=1.0)
     p.add_argument("--use-step-film", action="store_true", default=True)
     p.add_argument("--no-use-step-film", dest="use_step_film", action="store_false")
@@ -442,8 +477,3 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Exiting early due to Ctrl-C")
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
-        sys.exit(0)
