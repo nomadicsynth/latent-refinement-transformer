@@ -1,13 +1,7 @@
 #!/usr/bin/env python
-"""Single-run trainer aligned with hparam_search_act.py (ACT model, TRL SFTTrainer).
-
-This script mirrors the training flow used in the sweep, but for a single
-configuration. It supports the ACT model variant, optional W&B logging, and
-evaluation after training.
-"""
+"""Single-run trainer for ACT model."""
 
 import argparse
-import csv
 import math
 import os
 import sys
@@ -30,7 +24,7 @@ from trl import SFTConfig, SFTTrainer
 from models.recursive_halting_mistral import (
     RecursiveHaltingMistralForCausalLM,
 )
-from transformers.integrations import WandbCallback
+from transformers.integrations.integration_utils import WandbCallback
 
 
 class HaltingStatsCallback(TrainerCallback):
@@ -100,6 +94,7 @@ class ACTWandbCallback(WandbCallback):
                 pass
         return super().on_log(args, state, control, logs=logs, **kwargs)
 
+
 @dataclass
 class RunSummary:
     eval_loss: Optional[float]
@@ -139,26 +134,26 @@ def main():
     p.add_argument("--attn-impl", default="flash_attention_2", choices=["sdpa", "eager", "flash_attention_2"])
 
     # ACT params
-    p.add_argument("--k-max", type=int, default=4)
-    p.add_argument("--tau", type=float, default=0.98)
-    p.add_argument("--lambda-ponder", type=float, default=0.003)
+    p.add_argument("--k-max", type=int, default=8)
+    p.add_argument("--tau", type=float, default=0.999)
+    p.add_argument("--lambda-ponder", type=float, default=0.00251)
     p.add_argument("--halting-mass-scale", type=float, default=1.0)
     p.add_argument("--use-step-film", action="store_true", default=True)
     p.add_argument("--no-use-step-film", dest="use_step_film", action="store_false")
-    p.add_argument("--film-rank", type=int, default=128)
-    p.add_argument("--lambda-deep-supervision", type=float, default=0.0)
+    p.add_argument("--film-rank", type=int, default=512)
+    p.add_argument("--lambda-deep-supervision", type=float, default=0.06)
 
     # Trainer
-    p.add_argument("--learning-rate", type=float, default=2e-4)
-    p.add_argument("--per-device-train-batch-size", type=int, default=8)
+    p.add_argument("--learning-rate", type=float, default=9e-4)
+    p.add_argument("--per-device-train-batch-size", type=int, default=2)
     p.add_argument("--per-device-eval-batch-size", type=int, default=1)
-    p.add_argument("--grad-accum", type=int, default=4)
+    p.add_argument("--grad-accum", type=int, default=8)
     p.add_argument("--warmup-ratio", type=float, default=0.05)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--bf16", action="store_true", default=True)
     p.add_argument("--no-bf16", dest="bf16", action="store_false")
-    p.add_argument("--max-length", type=int, default=32768, help="Batching length cap. Use 32768 for full packed.")
+    p.add_argument("--max-length", type=int, default=1024)
     p.add_argument("--eval-steps", type=int, default=100)
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--max-steps", type=int, default=1000, help="Set 0 to use epochs instead.")
@@ -267,8 +262,8 @@ def main():
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.grad_accum,
         gradient_checkpointing=args.grad_checkpointing,
-        max_steps=(args.max_steps if args.max_steps and args.max_steps > 0 else None),
-        num_train_epochs=(args.num_train_epochs if (not args.max_steps) and args.num_train_epochs > 0 else None),
+        max_steps=(args.max_steps if args.max_steps and args.max_steps > 0 else -1),
+        num_train_epochs=(args.num_train_epochs if (not args.max_steps) and args.num_train_epochs > 0 else 3),
         weight_decay=args.weight_decay,
         completion_only_loss=False,
         bf16=args.bf16,
@@ -285,7 +280,7 @@ def main():
         pad_token=tok.pad_token,
         packing=args.packing,
         dataset_kwargs={"skip_preprocessing": True},
-        use_liger_kernel=False,
+        use_liger_kernel=False,  # Causes a crash. Haven't investigated why.
         run_name=(
             args.run_name
             or f"K{args.k_max}-tau{args.tau}-lam{args.lambda_ponder}-hs{args.halting_mass_scale}-sf{args.use_step_film}-fr{args.film_rank}-ds{args.lambda_deep_supervision}-lr{args.learning_rate:g}"
@@ -312,15 +307,7 @@ def main():
         callbacks=callbacks,
     )
 
-    start = time.time()
-    out = trainer.train()
-    train_runtime = time.time() - start
-
-    steps_trained = None
-    try:
-        steps_trained = int(out.metrics.get("train_steps", 0))
-    except Exception:
-        pass
+    trainer.train()
 
     # Snapshot ACT stats at end of training
     try:
@@ -359,21 +346,6 @@ def main():
         print(f"train_act_inner_steps={train_act_inner} train_act_expected_steps={train_act_expected}")
     if eval_act_inner is not None or eval_act_expected is not None:
         print(f"eval_act_inner_steps={eval_act_inner} eval_act_expected_steps={eval_act_expected}")
-
-    # Best-effort cleanup
-    try:
-        del trainer
-    except Exception:
-        pass
-    try:
-        del model
-    except Exception:
-        pass
-    try:
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
-
 
 if __name__ == "__main__":
     try:
