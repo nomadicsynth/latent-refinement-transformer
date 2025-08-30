@@ -166,6 +166,8 @@ def main():
     p.add_argument("--early-stopping-threshold", type=float, default=0.0)
     p.add_argument("--packing", action="store_true", default=True)
     p.add_argument("--no-packing", dest="packing", action="store_false")
+    p.add_argument("--use-liger-kernel", action="store_true", default=True)
+    p.add_argument("--no-use-liger-kernel", dest="use_liger_kernel", action="store_false")
 
     # Saving / checkpoints
     p.add_argument(
@@ -291,6 +293,10 @@ def main():
     # Save/Checkpoint strategy
     save_strategy = args.save_strategy
 
+    dataset_kwargs = {}
+    if args.skip_preprocessing:
+        dataset_kwargs["skip_preprocessing"] = True
+
     # Build SFTConfig kwargs with conditional population
     sft_kwargs = {
         "output_dir": args.output_dir,
@@ -322,8 +328,8 @@ def main():
         "eos_token": tok.eos_token,
         "pad_token": tok.pad_token,
         "packing": args.packing,
-        "dataset_kwargs": {"skip_preprocessing": True},
-        "use_liger_kernel": True,
+        "dataset_kwargs": dataset_kwargs,
+        "use_liger_kernel": args.use_liger_kernel,
     }
 
     # Conditional: evaluation strategy depends on eval dataset presence
