@@ -302,6 +302,9 @@ def main():
     cfg.film_rank = args.film_rank
     cfg.lambda_deep_supervision = args.lambda_deep_supervision
 
+    # Disable KV cache because the model doesn't use it, yet...
+    cfg.use_cache = False
+
     model = RecursiveHaltingMistralForCausalLM(cfg).to(device=device, dtype=dtype)
 
     if args.compile and hasattr(torch, "compile"):
