@@ -1,25 +1,29 @@
 import torch
-from transformers import AutoTokenizer, MistralForCausalLM
-import os
+from transformers import AutoTokenizer
+from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+import argparse
 
-# Path to the checkpoint directory
-checkpoint_dir = "./results/checkpoint-15483"
+parser = argparse.ArgumentParser(description="Inference script for Recursive Halting Mistral")
+parser.add_argument("--checkpoint_dir", type=str, help="Path to the checkpoint directory")
+args = parser.parse_args()
 
-# Model and tokenizer name (should match training)
-tokenizer_name = "mistralai/Mistral-7B-Instruct-v0.3"
+if args.checkpoint_dir is None:
+    raise ValueError("Checkpoint directory must be specified.")
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 # Load tokenizer
-print(f"Loading tokenizer from: {tokenizer_name}")
-tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+print(f"Loading tokenizer from: {args.checkpoint_dir}")
+tokenizer = AutoTokenizer.from_pretrained(args.checkpoint_dir)
 tokenizer.pad_token = tokenizer.eos_token
 
 # Load model from checkpoint
-print(f"Loading model from checkpoint: {checkpoint_dir}")
-model = MistralForCausalLM.from_pretrained(checkpoint_dir, torch_dtype=torch.bfloat16)
+print(f"Loading model from checkpoint: {args.checkpoint_dir}")
+model = RecursiveHaltingMistralForCausalLM.from_pretrained(args.checkpoint_dir, torch_dtype=torch.bfloat16)
 model.eval()
 
 # Move model to device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 # Example prompt for inference
