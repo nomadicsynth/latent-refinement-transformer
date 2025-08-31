@@ -58,17 +58,9 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
     - In training, we form a convex combination of logits over inner steps using w_t.
     """
 
-    def __init__(
-        self,
-        config,
-        k_max: int = 4,
-        tau: float = 0.99,
-        lambda_ponder: float = 0.001,
-        halting_mass_scale: float = 1.0,
-        use_step_film: bool = True,
-        film_rank: int = 128,
-        lambda_deep_supervision: float = 0.0,
-    ):
+    def __init__(self, config, k_max: int = 4, tau: float = 0.99, lambda_ponder: float = 0.001,
+                 halting_mass_scale: float = 1.0, use_step_film: bool = True, film_rank: int = 128,
+                 lambda_deep_supervision: float = 0.0):
         super().__init__(config)
         assert k_max >= 1
         self.k_max = k_max
@@ -89,6 +81,11 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             self.step_film = StepFiLM(hidden_size=config.hidden_size, k_max=k_max, rank=film_rank)
         else:
             self.step_film = None
+
+        # Residual across inner steps
+        self.use_residual_across_steps = True
+        # Start small (sigmoid(-2) ≈ 0.12) to bias toward gentle updates
+        self.step_gates = nn.Parameter(torch.full((k_max,), -2.0))
 
         # Exposed telemetry for callbacks/logging
         self._last_inner_steps = 1
@@ -149,11 +146,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             still_running = ((halting_mass < self.tau) & valid_mask).to(dtype=h.dtype)
 
             # Compute weight for this step
-            w_t = torch.where(
-                new_halt,
-                1.0 - halting_mass,
-                p_t,
-            )
+            w_t = torch.where(new_halt, 1.0 - halting_mass, p_t)
             w_t = w_t * still_running
             weights.append(w_t)
             halting_mass = (halting_mass + w_t) * self.halting_mass_scale
@@ -183,7 +176,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             else:
                 h_in = h
 
-            # Next inner step
+            # Next inner step compute
             outputs = self.model(
                 input_ids=None,
                 attention_mask=attention_mask,
@@ -195,7 +188,16 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
             )
-            h = outputs.last_hidden_state
+            h_next = outputs.last_hidden_state  # proposed refinement
+
+            # Gated residual refinement (EMA toward h_next), masked to still-running tokens
+            if self.use_residual_across_steps:
+                eta = torch.sigmoid(self.step_gates[min(t, self.k_max - 1)])  # scalar
+                # h <- h + eta * (h_next - h) on running tokens; keep halted tokens unchanged
+                update = eta * (h_next - h)
+                h = h + update * still_running.unsqueeze(-1)
+            else:
+                h = h_next
 
         # Normalize weights so sum_t w_t ~ 1 for running samples; clamp for numerical stability
         W = torch.stack(weights, dim=0)  # [T, b, s]
