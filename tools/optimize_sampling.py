@@ -117,12 +117,8 @@ def score_sample(
     len_pen = abs(length - target_len) / max(1, target_len)
     # Convert to bounded terms
     fluency = -math.log(max(ppl, 1e-6))  # higher is better
-    diversity = (
-        0.5 * rep.get("uniq_ng3_ratio", 1.0) + 0.5 * rep.get("uniq_ng4_ratio", 1.0)
-    )  # in [0,1]
-    repetition = -(
-        0.5 * rep.get("repeat_ng3", 0.0) + 0.5 * rep.get("repeat_ng4", 0.0)
-    )  # more repeats -> lower score
+    diversity = 0.5 * rep.get("uniq_ng3_ratio", 1.0) + 0.5 * rep.get("uniq_ng4_ratio", 1.0)  # in [0,1]
+    repetition = -(0.5 * rep.get("repeat_ng3", 0.0) + 0.5 * rep.get("repeat_ng4", 0.0))  # more repeats -> lower score
     length_term = -len_pen
 
     return (
@@ -150,7 +146,7 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=192)
     ap.add_argument("--per-config-samples", type=int, default=1, help="Samples per prompt per config.")
     ap.add_argument("--target-len", type=int, default=120, help="Target output tokens (approx).")
-    ap.add_argument("--batch-size", type=int, default=8, help="Maximum batch size for generation stage. Actual batch size during generation phase may be smaller due to the number of topics.")
+    ap.add_argument("--batch-size", type=int, default=8, help="Max generation batch size (may be smaller).")
 
     # Scoring weights
     ap.add_argument("--w-fluency", type=float, default=1.0)
@@ -259,11 +255,13 @@ def main():
                 decoded = tokenizer.batch_decode(out_ids, skip_special_tokens=True)
                 for prompt_text, full_text in zip(batch_prompts, decoded):
                     completion = full_text[len(prompt_text) :] if full_text.startswith(prompt_text) else full_text
-                    samples.append({
-                        "cfg": cfg_d,
-                        "prompt": prompt_text,
-                        "completion": completion,
-                    })
+                    samples.append(
+                        {
+                            "cfg": cfg_d,
+                            "prompt": prompt_text,
+                            "completion": completion,
+                        }
+                    )
                 pbar.update(len(batch_prompts))
 
     # Pipeline Stage 3: scoring/analysis
@@ -275,11 +273,11 @@ def main():
         torch.cuda.empty_cache()
 
         judge_model = AutoModelForCausalLM.from_pretrained(
-            args.judge_model_name_or_path, torch_dtype=torch.bfloat16
+            args.judge_model_name_or_path,
+            torch_dtype=torch.bfloat16,
         ).eval().to(device)
         judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_name_or_path)
         judge_tokenizer.pad_token = judge_tokenizer.eos_token
-
 
     with tqdm(total=len(samples), desc="Scoring", unit="sample", dynamic_ncols=True) as pbar2:
         for s in samples:
@@ -296,9 +294,7 @@ def main():
             comp_ids = judge_tokenizer(completion, return_tensors="pt")["input_ids"][0].tolist()
             rep = repetition_metrics(comp_ids)
 
-            score = score_sample(
-                ppl=ppl, rep=rep, length=len(comp_ids), target_len=args.target_len, weights=weights
-            )
+            score = score_sample(ppl=ppl, rep=rep, length=len(comp_ids), target_len=args.target_len, weights=weights)
 
             row = {
                 **cfg_d,
@@ -346,18 +342,20 @@ def main():
     if best_key is not None:
         t, p, rp, ng, mnt = best_key
         print("Best (avg score):")
-        print(json.dumps(
-            {
-                "temperature": t,
-                "top_p": p,
-                "repetition_penalty": rp,
-                "no_repeat_ngram_size": ng,
-                "max_new_tokens": mnt,
-                "avg_score": best_avg,
-                "trials": counts[best_key],
-            },
-            indent=2,
-        ))
+        print(
+            json.dumps(
+                {
+                    "temperature": t,
+                    "top_p": p,
+                    "repetition_penalty": rp,
+                    "no_repeat_ngram_size": ng,
+                    "max_new_tokens": mnt,
+                    "avg_score": best_avg,
+                    "trials": counts[best_key],
+                },
+                indent=2,
+            )
+        )
 
 
 if __name__ == "__main__":
