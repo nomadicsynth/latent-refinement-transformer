@@ -54,32 +54,16 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
     def __init__(
         self,
         config,
-        k_max: Optional[int] = None,
-        tau: Optional[float] = None,
-        lambda_ponder: Optional[float] = None,
-        halting_mass_scale: Optional[float] = None,
-        use_step_film: Optional[bool] = None,
-        film_rank: Optional[int] = None,
-        lambda_deep_supervision: Optional[float] = None,
     ):
         super().__init__(config)
         # Resolve from config first, allow explicit kwargs to override
-        self.k_max = k_max if k_max is not None else getattr(config, "k_max", 4)
-        self.tau = tau if tau is not None else getattr(config, "tau", 0.99)
-        self.lambda_ponder = (
-            lambda_ponder if lambda_ponder is not None else getattr(config, "lambda_ponder", 0.001)
-        )
-        self.halting_mass_scale = (
-            halting_mass_scale if halting_mass_scale is not None else getattr(config, "halting_mass_scale", 1.0)
-        )
-        self.use_step_film = (
-            use_step_film if use_step_film is not None else getattr(config, "use_step_film", True)
-        )
-        self.film_rank = film_rank if film_rank is not None else getattr(config, "film_rank", 128)
-        self.lambda_deep_supervision = (
-            lambda_deep_supervision if lambda_deep_supervision is not None
-            else getattr(config, "lambda_deep_supervision", 0.0)
-        )
+        self.k_max = getattr(config, "k_max", 4)
+        self.tau = getattr(config, "tau", 0.99)
+        self.lambda_ponder = getattr(config, "lambda_ponder", 0.001)
+        self.halting_mass_scale = getattr(config, "halting_mass_scale", 1.0)
+        self.use_step_film = getattr(config, "use_step_film", True)
+        self.film_rank = getattr(config, "film_rank", 128)
+        self.lambda_deep_supervision = getattr(config, "lambda_deep_supervision", 0.0)
 
         # Persist effective values onto config so save_pretrained() serializes them
         config.k_max = self.k_max
@@ -106,7 +90,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         # Residual across inner steps
         self.use_residual_across_steps = True
         # Start small (sigmoid(-2) ≈ 0.12) to bias toward gentle updates
-        self.step_gates = nn.Parameter(torch.full((k_max,), -2.0))
+        self.step_gates = nn.Parameter(torch.full((self.k_max,), -2.0))
 
         # Exposed telemetry for callbacks/logging
         self._last_inner_steps = 1
