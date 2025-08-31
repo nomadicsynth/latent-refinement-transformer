@@ -50,35 +50,56 @@ class StepFiLM(nn.Module):
 class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
     """
     Adaptive Computation Time (ACT) style halting around Mistral.
-
-    - Unroll up to K_max inner steps per token.
-    - At each inner step t, compute p_t via a stop head on hidden states.
-    - Compute halting weights w_t and expected steps.
-    - Loss = token CE + lambda_ponder * E[steps].
-    - In training, we form a convex combination of logits over inner steps using w_t.
     """
-
-    def __init__(self, config, k_max: int = 4, tau: float = 0.99, lambda_ponder: float = 0.001,
-                 halting_mass_scale: float = 1.0, use_step_film: bool = True, film_rank: int = 128,
-                 lambda_deep_supervision: float = 0.0):
+    def __init__(
+        self,
+        config,
+        k_max: Optional[int] = None,
+        tau: Optional[float] = None,
+        lambda_ponder: Optional[float] = None,
+        halting_mass_scale: Optional[float] = None,
+        use_step_film: Optional[bool] = None,
+        film_rank: Optional[int] = None,
+        lambda_deep_supervision: Optional[float] = None,
+    ):
         super().__init__(config)
-        assert k_max >= 1
-        self.k_max = k_max
-        self.tau = tau
-        self.lambda_ponder = lambda_ponder
-        self.halting_mass_scale = halting_mass_scale
+        # Resolve from config first, allow explicit kwargs to override
+        self.k_max = k_max if k_max is not None else getattr(config, "k_max", 4)
+        self.tau = tau if tau is not None else getattr(config, "tau", 0.99)
+        self.lambda_ponder = (
+            lambda_ponder if lambda_ponder is not None else getattr(config, "lambda_ponder", 0.001)
+        )
+        self.halting_mass_scale = (
+            halting_mass_scale if halting_mass_scale is not None else getattr(config, "halting_mass_scale", 1.0)
+        )
+        self.use_step_film = (
+            use_step_film if use_step_film is not None else getattr(config, "use_step_film", True)
+        )
+        self.film_rank = film_rank if film_rank is not None else getattr(config, "film_rank", 128)
+        self.lambda_deep_supervision = (
+            lambda_deep_supervision if lambda_deep_supervision is not None
+            else getattr(config, "lambda_deep_supervision", 0.0)
+        )
+
+        # Persist effective values onto config so save_pretrained() serializes them
+        config.k_max = self.k_max
+        config.tau = self.tau
+        config.lambda_ponder = self.lambda_ponder
+        config.halting_mass_scale = self.halting_mass_scale
+        config.use_step_film = self.use_step_film
+        config.film_rank = self.film_rank
+        config.lambda_deep_supervision = self.lambda_deep_supervision
+
         self.stop_head = StopHead(config.hidden_size)
         # Initialize stop bias so initial p_t ~ 0.55 (gentle early-halt prior)
         with torch.no_grad():
             b = math.log(0.55 / 0.45)
             if hasattr(self.stop_head, "proj") and hasattr(self.stop_head.proj, "bias"):
                 self.stop_head.proj.bias.fill_(b)
-        self.use_step_film = use_step_film
-        self.lambda_deep_supervision = lambda_deep_supervision
 
         # Tiny step-conditioned FiLM so later passes have distinct compute
         if self.use_step_film:
-            self.step_film = StepFiLM(hidden_size=config.hidden_size, k_max=k_max, rank=film_rank)
+            self.step_film = StepFiLM(hidden_size=config.hidden_size, k_max=self.k_max, rank=self.film_rank)
         else:
             self.step_film = None
 

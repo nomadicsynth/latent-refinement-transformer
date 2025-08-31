@@ -293,16 +293,16 @@ def main():
     cfg.num_key_value_heads = args.num_kv_heads
     cfg._attn_implementation = args.attn_impl
 
-    model = RecursiveHaltingMistralForCausalLM(
-        cfg,
-        k_max=args.k_max,
-        tau=args.tau,
-        lambda_ponder=args.lambda_ponder,
-        halting_mass_scale=args.halting_mass_scale,
-        use_step_film=args.use_step_film,
-        film_rank=args.film_rank,
-        lambda_deep_supervision=args.lambda_deep_supervision,
-    ).to(device=device, dtype=dtype)
+    # Persist ACT hyperparameters to the config so they serialize with checkpoints
+    cfg.k_max = args.k_max
+    cfg.tau = args.tau
+    cfg.lambda_ponder = args.lambda_ponder
+    cfg.halting_mass_scale = args.halting_mass_scale
+    cfg.use_step_film = args.use_step_film
+    cfg.film_rank = args.film_rank
+    cfg.lambda_deep_supervision = args.lambda_deep_supervision
+
+    model = RecursiveHaltingMistralForCausalLM(cfg).to(device=device, dtype=dtype)
 
     if args.compile and hasattr(torch, "compile"):
         try:
