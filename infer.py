@@ -1,7 +1,9 @@
 import torch
 from transformers import AutoTokenizer
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+from transformers import set_seed
 import argparse
+import random
 
 parser = argparse.ArgumentParser(description="Inference script for Recursive Halting Mistral")
 parser.add_argument("--checkpoint_dir", type=str, help="Path to the checkpoint directory")
@@ -12,6 +14,10 @@ if args.checkpoint_dir is None:
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+# Reproducibility (optional but helpful when comparing settings)
+seed = 42
+set_seed(seed)
 
 # Load tokenizer
 print(f"Loading tokenizer from: {args.checkpoint_dir}")
@@ -27,7 +33,15 @@ model.eval()
 model.to(device)
 
 # Example prompt for inference
-prompt = "Doctor Who is"
+topic = "Doctor Who"
+use_wikitext = False  # set True if your corpus retained wikitext
+
+if use_wikitext:
+    prompt = f"'''{topic}''' is"
+else:
+    # Title line + lead stub
+    prompt = f"{topic}\n{topic} is"
+
 print(f"Prompt: {prompt}")
 
 # Tokenize input
@@ -38,10 +52,13 @@ inputs = {k: v.to(device) for k, v in inputs.items()}
 with torch.no_grad():
     output_ids = model.generate(
         **inputs,
-        max_new_tokens=64,
+        max_new_tokens=256,
         do_sample=True,
-        top_p=0.95,
-        temperature=0.7,
+        temperature=0.56,
+        top_p=0.90,
+        repetition_penalty=1.1,
+        no_repeat_ngram_size=4,
+        length_penalty=1.0,
         pad_token_id=tokenizer.eos_token_id,
         use_cache=False,  # Cache not supported yet
     )
