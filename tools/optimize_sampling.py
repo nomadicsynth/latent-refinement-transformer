@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, Tuple
 
 import torch
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, set_seed
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 
 # Local model class
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
@@ -159,7 +159,7 @@ def main():
     ap.add_argument("--w-length", type=float, default=0.1)
 
     # Optional separate judge LM for perplexity (defaults to same model)
-    ap.add_argument("--judge-model-dir", default=None)
+    ap.add_argument("--judge-model-name-or-path", default=None)
 
     args = ap.parse_args()
 
@@ -171,15 +171,6 @@ def main():
     model.eval().to(device)
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     tokenizer.pad_token = tokenizer.eos_token
-
-    judge_model = model
-    judge_tokenizer = tokenizer
-    if args.judge_model_dir:
-        judge_model = RecursiveHaltingMistralForCausalLM.from_pretrained(
-            args.judge_model_dir, torch_dtype=torch.bfloat16
-        ).eval().to(device)
-        judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_dir)
-        judge_tokenizer.pad_token = judge_tokenizer.eos_token
 
     with open(args.prompts_file, "r", encoding="utf-8") as f:
         topics = [line.strip() for line in f if line.strip()]
@@ -276,6 +267,20 @@ def main():
                 pbar.update(len(batch_prompts))
 
     # Pipeline Stage 3: scoring/analysis
+    judge_model = model
+    judge_tokenizer = tokenizer
+    if args.judge_model_name_or_path:
+        # Unload the original model
+        del model
+        torch.cuda.empty_cache()
+
+        judge_model = AutoModelForCausalLM.from_pretrained(
+            args.judge_model_name_or_path, torch_dtype=torch.bfloat16
+        ).eval().to(device)
+        judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_name_or_path)
+        judge_tokenizer.pad_token = judge_tokenizer.eos_token
+
+
     with tqdm(total=len(samples), desc="Scoring", unit="sample", dynamic_ncols=True) as pbar2:
         for s in samples:
             prompt = s["prompt"]
