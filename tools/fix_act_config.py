@@ -34,6 +34,14 @@ def main():
         help="Do not modify architectures field",
     )
 
+    # Optional: ensure use_cache is set to False
+    p.add_argument(
+        "--use-cache",
+        action="store_true",
+        default=False,
+        help="Set use_cache to False (default: off)",
+    )
+
     args = p.parse_args()
 
     model_dir = args.model_dir
@@ -55,6 +63,7 @@ def main():
     cfg.use_step_film = bool(args.use_step_film)
     cfg.film_rank = int(args.film_rank)
     cfg.lambda_deep_supervision = float(args.lambda_deep_supervision)
+    cfg.use_cache = args.use_cache
 
     if args.set_architectures:
         cfg.architectures = ["RecursiveHaltingMistralForCausalLM"]
@@ -72,6 +81,7 @@ def main():
         "use_step_film",
         "film_rank",
         "lambda_deep_supervision",
+        "use_cache",
         "architectures",
     ]
     delta = {k: {"old": before.get(k), "new": after.get(k)} for k in touched if before.get(k) != after.get(k)}
