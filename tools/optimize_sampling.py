@@ -6,7 +6,7 @@ import math
 import os
 import random
 from dataclasses import asdict, dataclass
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 from tqdm.auto import tqdm
@@ -114,7 +114,7 @@ def score_sample(
     weights: Dict[str, float],
 ) -> float:
     # Lower perplexity is better; higher uniq_ng ratios are better; length close to target
-    len_pen = abs(length - target_len) / max(1, target_len)
+    len_pen = abs(length - target_len) / max(1, target_len) if target_len > 0 else 0.0
     # Convert to bounded terms
     fluency = -math.log(max(ppl, 1e-6))  # higher is better
     diversity = 0.5 * rep.get("uniq_ng3_ratio", 1.0) + 0.5 * rep.get("uniq_ng4_ratio", 1.0)  # in [0,1]
@@ -136,7 +136,7 @@ def main():
     ap.add_argument("--out-csv", default="sampling_sweep.csv")
     ap.add_argument("--wikitext", action="store_true", help="Use wikitext-style prompts (triple quotes).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--seed", type=int, default=0)
 
     # Grid definitions (comma-separated lists)
     ap.add_argument("--temperatures", default="0.5,0.6,0.7,0.8")
@@ -159,8 +159,9 @@ def main():
 
     args = ap.parse_args()
 
-    # Set random seeds for reproducibility
-    set_seed(args.seed)
+    # Set random seed for reproducibility
+    if args.seed != 0:
+        set_seed(args.seed)
 
     device = torch.device(args.device)
     model = RecursiveHaltingMistralForCausalLM.from_pretrained(args.model_dir, torch_dtype=torch.bfloat16)
