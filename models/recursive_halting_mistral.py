@@ -109,6 +109,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        **kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -124,6 +125,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=True,
+            **kwargs,
         )
         h = outputs.last_hidden_state  # [b, s, d]
 
@@ -192,6 +194,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=True,
+                **kwargs,
             )
             h_next = outputs.last_hidden_state  # proposed refinement
 
