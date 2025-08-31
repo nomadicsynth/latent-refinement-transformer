@@ -5,12 +5,12 @@ import json
 import math
 import os
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, Iterable, List, Tuple
-from tqdm.auto import tqdm
 
 import torch
-from transformers import AutoTokenizer
+from tqdm.auto import tqdm
+from transformers import AutoTokenizer, set_seed
 
 # Local model class
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
@@ -140,7 +140,7 @@ def main():
     ap.add_argument("--out-csv", default="sampling_sweep.csv")
     ap.add_argument("--wikitext", action="store_true", help="Use wikitext-style prompts (triple quotes).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=42)
 
     # Grid definitions (comma-separated lists)
     ap.add_argument("--temperatures", default="0.5,0.6,0.7,0.8")
@@ -150,6 +150,7 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=192)
     ap.add_argument("--per-config-samples", type=int, default=1, help="Samples per prompt per config.")
     ap.add_argument("--target-len", type=int, default=120, help="Target output tokens (approx).")
+    ap.add_argument("--batch-size", type=int, default=8, help="Maximum batch size for generation stage. Actual batch size during generation phase may be smaller due to the number of topics.")
 
     # Scoring weights
     ap.add_argument("--w-fluency", type=float, default=1.0)
@@ -161,10 +162,9 @@ def main():
     ap.add_argument("--judge-model-dir", default=None)
 
     args = ap.parse_args()
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if args.device.startswith("cuda") and torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+
+    # Set random seeds for reproducibility
+    set_seed(args.seed)
 
     device = torch.device(args.device)
     model = RecursiveHaltingMistralForCausalLM.from_pretrained(args.model_dir, torch_dtype=torch.bfloat16)
@@ -204,13 +204,17 @@ def main():
         "repetition_penalty",
         "no_repeat_ngram_size",
         "max_new_tokens",
+        "do_sample",
+        "use_cache",
         "prompt",
         "completion",
         "tokens",
         "ppl",
         "score",
+        "uniq_ng2_ratio",
         "uniq_ng3_ratio",
         "uniq_ng4_ratio",
+        "repeat_ng2",
         "repeat_ng3",
         "repeat_ng4",
     ]
@@ -218,46 +222,78 @@ def main():
     best = None  # (score, config_dict)
     rows = []
 
-    for cfg in cfgs:
-        cfg_d = asdict(cfg)
-        for topic in topics:
-            prompt = build_prompt(topic, wikitext=args.wikitext)
-            if not prompt:
-                continue
+    # Pipeline Stage 1: prepare all prompts per config
+    per_samp = max(1, args.per_config_samples)
+    all_batches = []  # list of tuples (cfg_d, prompts: List[str])
+    total_samples = 0
+    expected_pre_samples = len(cfgs) * len(topics) * per_samp
+    with tqdm(total=expected_pre_samples, desc="Preparing", unit="sample", dynamic_ncols=True) as pbar0:
+        for cfg in cfgs:
+            cfg_d = asdict(cfg)
+            prompts: List[str] = []
+            for topic in topics:
+                prompt = build_prompt(topic, wikitext=args.wikitext)
+                if not prompt:
+                    continue
+                prompts.extend([prompt] * per_samp)
+            if prompts:
+                all_batches.append((cfg_d, prompts))
+                total_samples += len(prompts)
+                pbar0.update(len(prompts))
 
-            # Tokenize prompt once for speed
-            enc = tokenizer(prompt, return_tensors="pt")
-            inputs = {k: v.to(device) for k, v in enc.items()}
+    # Pipeline Stage 2: batched generation per config
+    samples = []  # will hold dicts with cfg and raw outputs for scoring later
+    with tqdm(total=total_samples, desc="Generating", unit="sample", dynamic_ncols=True) as pbar:
+        for cfg_d, prompts in all_batches:
+            for i in range(0, len(prompts), args.batch_size):
+                batch_prompts = prompts[i : i + args.batch_size]
+                enc = tokenizer(batch_prompts, return_tensors="pt", padding=True)
+                inputs = {k: v.to(device) for k, v in enc.items()}
 
-            with torch.no_grad():
-                out_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=cfg.max_new_tokens,
-                    do_sample=cfg.do_sample,
-                    temperature=cfg.temperature,
-                    top_p=cfg.top_p,
-                    repetition_penalty=cfg.repetition_penalty,
-                    no_repeat_ngram_size=cfg.no_repeat_ngram_size,
-                    length_penalty=1.0,
-                    pad_token_id=tokenizer.eos_token_id,
-                    use_cache=cfg.use_cache,
-                )
-            full = tokenizer.decode(out_ids[0], skip_special_tokens=True)
-            # Extract completion by removing the prompt prefix
-            completion = full[len(prompt) :] if full.startswith(prompt) else full
+                with torch.no_grad():
+                    out_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=cfg_d["max_new_tokens"],
+                        do_sample=cfg_d["do_sample"],
+                        temperature=cfg_d["temperature"],
+                        top_p=cfg_d["top_p"],
+                        repetition_penalty=cfg_d["repetition_penalty"],
+                        no_repeat_ngram_size=cfg_d["no_repeat_ngram_size"],
+                        length_penalty=1.0,
+                        pad_token_id=tokenizer.eos_token_id,
+                        use_cache=cfg_d["use_cache"],
+                    )
 
-            # Score with judge LM perplexity on completion tokens
+                # Decode each sample in the batch
+                decoded = tokenizer.batch_decode(out_ids, skip_special_tokens=True)
+                for prompt_text, full_text in zip(batch_prompts, decoded):
+                    completion = full_text[len(prompt_text) :] if full_text.startswith(prompt_text) else full_text
+                    samples.append({
+                        "cfg": cfg_d,
+                        "prompt": prompt_text,
+                        "completion": completion,
+                    })
+                pbar.update(len(batch_prompts))
+
+    # Pipeline Stage 3: scoring/analysis
+    with tqdm(total=len(samples), desc="Scoring", unit="sample", dynamic_ncols=True) as pbar2:
+        for s in samples:
+            prompt = s["prompt"]
+            completion = s["completion"]
+            cfg_d = s["cfg"]
+
             judge_in = tokenize_for_ppl(judge_tokenizer, prompt, completion, device)
             with torch.no_grad():
                 out = judge_model(**judge_in, return_dict=True)
                 loss = float(out.loss.detach().cpu())
-                ppl = float(math.exp(min(20.0, max(-20.0, loss))))  # clamp for stability
+                ppl = float(math.exp(min(20.0, max(-20.0, loss))))
 
-            # Repetition/diversity
             comp_ids = judge_tokenizer(completion, return_tensors="pt")["input_ids"][0].tolist()
             rep = repetition_metrics(comp_ids)
 
-            score = score_sample(ppl=ppl, rep=rep, length=len(comp_ids), target_len=args.target_len, weights=weights)
+            score = score_sample(
+                ppl=ppl, rep=rep, length=len(comp_ids), target_len=args.target_len, weights=weights
+            )
 
             row = {
                 **cfg_d,
@@ -269,8 +305,7 @@ def main():
                 **rep,
             }
             rows.append(row)
-
-            # Track best by average over prompts later
+            pbar2.update(1)
 
     # Aggregate by config
     agg: Dict[Tuple, Dict[str, float]] = {}
