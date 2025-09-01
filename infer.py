@@ -5,6 +5,7 @@ from transformers import set_seed
 import argparse
 import random
 from tqdm.auto import tqdm
+import json
 
 parser = argparse.ArgumentParser(description="Inference script for Recursive Halting Mistral")
 parser.add_argument("--checkpoint_dir", type=str, help="Path to the checkpoint directory")
@@ -17,7 +18,36 @@ parser.add_argument("--top_p", type=float, default=0.90, help="Top-p (nucleus) s
 parser.add_argument("--repetition_penalty", type=float, default=1.061, help="Repetition penalty (>1.0 discourages repeats)")
 parser.add_argument("--no_repeat_ngram_size", type=int, default=3, help="Prevent repeating n-grams of this size")
 parser.add_argument("--length_penalty", type=float, default=1.0, help="Length penalty for beam/search scoring (kept for compatibility)")
+parser.add_argument("--sampling_config", type=str, default=None, help="Path to JSON file to override sampling hyperparameters")  # NEW
 args = parser.parse_args()
+
+# Apply JSON sampling overrides if provided
+if args.sampling_config:
+    try:
+        with open(args.sampling_config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        allowed = {
+            "max_new_tokens": int,
+            "temperature": float,
+            "top_p": float,
+            "repetition_penalty": float,
+            "no_repeat_ngram_size": int,
+            "length_penalty": float,
+        }
+        applied = {}
+        for k, caster in allowed.items():
+            if k in cfg and cfg[k] is not None:
+                try:
+                    setattr(args, k, caster(cfg[k]))
+                    applied[k] = getattr(args, k)
+                except Exception:
+                    print(f"Warning: could not cast sampling_config['{k}']={cfg[k]!r}")
+        if applied:
+            print(f"Applied sampling overrides from {args.sampling_config}: {applied}")
+    except FileNotFoundError:
+        print(f"Warning: sampling_config file not found: {args.sampling_config}")
+    except json.JSONDecodeError as e:
+        print(f"Warning: failed to parse sampling_config JSON: {e}")
 
 if args.checkpoint_dir is None:
     raise ValueError("Checkpoint directory must be specified.")
