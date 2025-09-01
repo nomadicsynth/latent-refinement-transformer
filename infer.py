@@ -8,6 +8,7 @@ from tqdm.auto import tqdm
 
 parser = argparse.ArgumentParser(description="Inference script for Recursive Halting Mistral")
 parser.add_argument("--checkpoint_dir", type=str, help="Path to the checkpoint directory")
+parser.add_argument("--output_file", type=str, default="./results/output.txt", help="Path to the output file")
 parser.add_argument("--batch_size", type=int, default=8, help="Batch size for inference")
 args = parser.parse_args()
 
@@ -84,3 +85,10 @@ print("Responses:")
 for i, resp in enumerate(all_responses):
     print("-" * 10, f"Response {i+1}", "-" * 10)
     print(resp)
+
+# Write responses to output file
+with open(args.output_file, "w", encoding="utf-8") as f:
+    for i, resp in enumerate(all_responses):
+        f.write("-" * 10 + f"Response {i+1}" + "-" * 10 + "\n")
+        f.write(resp + "\n")
+print(f"Responses written to: {args.output_file}")
