@@ -132,7 +132,8 @@ def score_sample(
 def main():
     ap = argparse.ArgumentParser(description="Optimize decoding hyperparameters via local heuristics.")
     ap.add_argument("--model-dir", required=True, help="Path to checkpoint dir (with config.json and weights).")
-    ap.add_argument("--prompts-file", required=True, help="File with one topic per line.")
+    # prompts-file is only required when not reanalyzing from an existing CSV
+    ap.add_argument("--prompts-file", required=False, help="File with one topic per line.")
     ap.add_argument("--out-csv", default="sampling_sweep.csv")
     ap.add_argument("--wikitext", action="store_true", help="Use wikitext-style prompts (triple quotes).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -157,6 +158,13 @@ def main():
     # Optional separate judge LM for perplexity (defaults to same model)
     ap.add_argument("--judge-model-name-or-path", default=None)
 
+    # Re-analysis flag: load an existing CSV and start from Phase 3 (skip generation)
+    ap.add_argument(
+        "--reanalyze-csv",
+        default=None,
+        help="Path to CSV from a previous run to re-score and re-aggregate (skips phases 1-2).",
+    )
+
     args = ap.parse_args()
 
     # Set random seed for reproducibility
@@ -164,19 +172,30 @@ def main():
         set_seed(args.seed)
 
     device = torch.device(args.device)
-    model = RecursiveHaltingMistralForCausalLM.from_pretrained(args.model_dir, torch_dtype=torch.bfloat16)
-    model.eval().to(device)
+    # Basic validation: prompts-file must be provided unless reanalyzing
+    if not args.reanalyze_csv and not args.prompts_file:
+        raise SystemExit("--prompts-file is required unless --reanalyze-csv is provided")
+
+    # We'll set these depending on the mode (fresh generate vs reanalyze)
+    model = None
     tokenizer = AutoTokenizer.from_pretrained(args.model_dir)
     tokenizer.pad_token = tokenizer.eos_token
 
-    with open(args.prompts_file, "r", encoding="utf-8") as f:
-        topics = [line.strip() for line in f if line.strip()]
+    # In fresh run, load generation model and prepare topics/configs
+    topics: List[str] = []
+    cfgs: List[DecodeConfig] = []
+    if not args.reanalyze_csv:
+        model = RecursiveHaltingMistralForCausalLM.from_pretrained(args.model_dir, torch_dtype=torch.bfloat16)
+        model.eval().to(device)
 
-    temps = parse_list(args.temperatures, float)
-    tps = parse_list(args.top_ps, float)
-    reps = parse_list(args.repetition_penalties, float)
-    ngrs = parse_list(args.no_repeat_ngram_sizes, int)
-    cfgs = grid_configs(temps, tps, reps, ngrs, args.max_new_tokens)
+        with open(args.prompts_file, "r", encoding="utf-8") as f:
+            topics = [line.strip() for line in f if line.strip()]
+
+        temps = parse_list(args.temperatures, float)
+        tps = parse_list(args.top_ps, float)
+        reps = parse_list(args.repetition_penalties, float)
+        ngrs = parse_list(args.no_repeat_ngram_sizes, int)
+        cfgs = grid_configs(temps, tps, reps, ngrs, args.max_new_tokens)
 
     weights = {
         "fluency": args.w_fluency,
@@ -210,75 +229,123 @@ def main():
     best = None  # (score, config_dict)
     rows = []
 
-    # Pipeline Stage 1: prepare all prompts per config
-    per_samp = max(1, args.per_config_samples)
-    all_batches = []  # list of tuples (cfg_d, prompts: List[str])
-    total_samples = 0
-    expected_pre_samples = len(cfgs) * len(topics) * per_samp
-    with tqdm(total=expected_pre_samples, desc="Preparing", unit="sample", dynamic_ncols=True) as pbar0:
-        for cfg in cfgs:
-            cfg_d = asdict(cfg)
-            prompts: List[str] = []
-            for topic in topics:
-                prompt = build_prompt(topic, wikitext=args.wikitext)
-                if not prompt:
-                    continue
-                prompts.extend([prompt] * per_samp)
-            if prompts:
-                all_batches.append((cfg_d, prompts))
-                total_samples += len(prompts)
-                pbar0.update(len(prompts))
-
-    # Pipeline Stage 2: batched generation per config
     samples = []  # will hold dicts with cfg and raw outputs for scoring later
-    with tqdm(total=total_samples, desc="Generating", unit="sample", dynamic_ncols=True) as pbar:
-        for cfg_d, prompts in all_batches:
-            for i in range(0, len(prompts), args.batch_size):
-                batch_prompts = prompts[i : i + args.batch_size]
-                enc = tokenizer(batch_prompts, return_tensors="pt", padding=True)
-                inputs = {k: v.to(device) for k, v in enc.items()}
 
-                with torch.no_grad():
-                    out_ids = model.generate(
-                        **inputs,
-                        max_new_tokens=cfg_d["max_new_tokens"],
-                        do_sample=cfg_d["do_sample"],
-                        temperature=cfg_d["temperature"],
-                        top_p=cfg_d["top_p"],
-                        repetition_penalty=cfg_d["repetition_penalty"],
-                        no_repeat_ngram_size=cfg_d["no_repeat_ngram_size"],
-                        length_penalty=1.0,
-                        pad_token_id=tokenizer.eos_token_id,
-                        use_cache=cfg_d["use_cache"],
-                    )
+    if args.reanalyze_csv:
+        # Load previous results and reconstruct samples list
+        def _to_bool(x: str) -> bool:
+            return str(x).strip().lower() in {"1", "true", "t", "yes", "y"}
 
-                # Decode each sample in the batch
-                decoded = tokenizer.batch_decode(out_ids, skip_special_tokens=True)
-                for prompt_text, full_text in zip(batch_prompts, decoded):
-                    completion = full_text[len(prompt_text) :] if full_text.startswith(prompt_text) else full_text
-                    samples.append(
-                        {
-                            "cfg": cfg_d,
-                            "prompt": prompt_text,
-                            "completion": completion,
-                        }
-                    )
-                pbar.update(len(batch_prompts))
+        with open(args.reanalyze_csv, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                prompt_text = row.get("prompt", "")
+                completion = row.get("completion", "")
+                if completion is None:
+                    completion = ""
+                # Skip empty completions
+                if completion.strip() == "":
+                    continue
+
+                cfg_d = {
+                    "temperature": float(row.get("temperature", 0.7)),
+                    "top_p": float(row.get("top_p", 0.9)),
+                    "repetition_penalty": float(row.get("repetition_penalty", 1.1)),
+                    "no_repeat_ngram_size": int(row.get("no_repeat_ngram_size", 3)),
+                    "max_new_tokens": int(row.get("max_new_tokens", 192)),
+                    "do_sample": _to_bool(row.get("do_sample", True)),
+                    "use_cache": _to_bool(row.get("use_cache", False)),
+                }
+                samples.append({"cfg": cfg_d, "prompt": prompt_text, "completion": completion})
+        total_samples = len(samples)
+    else:
+        # Pipeline Stage 1: prepare all prompts per config
+        per_samp = max(1, args.per_config_samples)
+        all_batches = []  # list of tuples (cfg_d, prompts: List[str])
+        total_samples = 0
+        expected_pre_samples = len(cfgs) * len(topics) * per_samp
+        with tqdm(total=expected_pre_samples, desc="Preparing", unit="sample", dynamic_ncols=True) as pbar0:
+            for cfg in cfgs:
+                cfg_d = asdict(cfg)
+                prompts_list: List[str] = []
+                for topic in topics:
+                    prompt = build_prompt(topic, wikitext=args.wikitext)
+                    if not prompt:
+                        continue
+                    prompts_list.extend([prompt] * per_samp)
+                if prompts_list:
+                    all_batches.append((cfg_d, prompts_list))
+                    total_samples += len(prompts_list)
+                    pbar0.update(len(prompts_list))
+
+        # Pipeline Stage 2: batched generation per config
+        with tqdm(total=total_samples, desc="Generating", unit="sample", dynamic_ncols=True) as pbar:
+            for cfg_d, prompts_list in all_batches:
+                for i in range(0, len(prompts_list), args.batch_size):
+                    batch_prompts = prompts_list[i : i + args.batch_size]
+                    enc = tokenizer(batch_prompts, return_tensors="pt", padding=True)
+                    inputs = {k: v.to(device) for k, v in enc.items()}
+
+                    with torch.no_grad():
+                        out_ids = model.generate(
+                            **inputs,
+                            max_new_tokens=cfg_d["max_new_tokens"],
+                            do_sample=cfg_d["do_sample"],
+                            temperature=cfg_d["temperature"],
+                            top_p=cfg_d["top_p"],
+                            repetition_penalty=cfg_d["repetition_penalty"],
+                            no_repeat_ngram_size=cfg_d["no_repeat_ngram_size"],
+                            length_penalty=1.0,
+                            pad_token_id=tokenizer.eos_token_id,
+                            use_cache=cfg_d["use_cache"],
+                        )
+
+                    # Decode each sample in the batch
+                    decoded = tokenizer.batch_decode(out_ids, skip_special_tokens=True)
+                    for prompt_text, full_text in zip(batch_prompts, decoded):
+                        completion = full_text[len(prompt_text) :] if full_text.startswith(prompt_text) else full_text
+                        samples.append(
+                            {
+                                "cfg": cfg_d,
+                                "prompt": prompt_text,
+                                "completion": completion,
+                            }
+                        )
+                    pbar.update(len(batch_prompts))
 
     # Pipeline Stage 3: scoring/analysis
-    judge_model = model
-    judge_tokenizer = tokenizer
-    if args.judge_model_name_or_path:
-        # Unload the original model
-        del model
-        torch.cuda.empty_cache()
+    # Decide which model to use as judge
+    judge_model = None
+    judge_tokenizer = None
+    if args.reanalyze_csv:
+        # When reanalyzing, we may not have loaded the generation model; load a judge here.
+        if args.judge_model_name_or_path:
+            judge_model = AutoModelForCausalLM.from_pretrained(
+                args.judge_model_name_or_path, torch_dtype=torch.bfloat16
+            ).eval().to(device)
+            judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_name_or_path)
+            judge_tokenizer.pad_token = judge_tokenizer.eos_token
+        else:
+            # Default to the same model as model-dir
+            judge_model = RecursiveHaltingMistralForCausalLM.from_pretrained(
+                args.model_dir, torch_dtype=torch.bfloat16
+            ).eval().to(device)
+            judge_tokenizer = tokenizer
+    else:
+        # Fresh run: reuse the loaded generation model unless a separate judge is requested
+        judge_model = model
+        judge_tokenizer = tokenizer
+        if args.judge_model_name_or_path:
+            # Unload the original model to free memory before loading judge
+            del model
+            torch.cuda.empty_cache()
 
-        judge_model = AutoModelForCausalLM.from_pretrained(
-            args.judge_model_name_or_path,
-            torch_dtype=torch.bfloat16,
-        ).eval().to(device)
-        judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_name_or_path)
-        judge_tokenizer.pad_token = judge_tokenizer.eos_token
+            judge_model = AutoModelForCausalLM.from_pretrained(
+                args.judge_model_name_or_path,
+                torch_dtype=torch.bfloat16,
+            ).eval().to(device)
+            judge_tokenizer = AutoTokenizer.from_pretrained(args.judge_model_name_or_path)
+            judge_tokenizer.pad_token = judge_tokenizer.eos_token
 
     with tqdm(total=len(samples), desc="Scoring", unit="sample", dynamic_ncols=True) as pbar2:
         for s in samples:
