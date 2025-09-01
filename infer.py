@@ -10,6 +10,13 @@ parser = argparse.ArgumentParser(description="Inference script for Recursive Hal
 parser.add_argument("--checkpoint_dir", type=str, help="Path to the checkpoint directory")
 parser.add_argument("--output_file", type=str, default="./results/output.txt", help="Path to the output file")
 parser.add_argument("--batch_size", type=int, default=8, help="Batch size for inference")
+# Sampling hyperparameters
+parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum number of new tokens to generate")
+parser.add_argument("--temperature", type=float, default=0.5, help="Sampling temperature")
+parser.add_argument("--top_p", type=float, default=0.90, help="Top-p (nucleus) sampling probability")
+parser.add_argument("--repetition_penalty", type=float, default=1.061, help="Repetition penalty (>1.0 discourages repeats)")
+parser.add_argument("--no_repeat_ngram_size", type=int, default=3, help="Prevent repeating n-grams of this size")
+parser.add_argument("--length_penalty", type=float, default=1.0, help="Length penalty for beam/search scoring (kept for compatibility)")
 args = parser.parse_args()
 
 if args.checkpoint_dir is None:
@@ -65,13 +72,13 @@ with torch.no_grad():
         # Generate for this batch
         output_ids = model.generate(
             **inputs,
-            max_new_tokens=256,
+            max_new_tokens=args.max_new_tokens,
             do_sample=True,
-            temperature=0.5,
-            top_p=0.90,
-            repetition_penalty=1.061,
-            no_repeat_ngram_size=3,
-            length_penalty=1.0,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            repetition_penalty=args.repetition_penalty,
+            no_repeat_ngram_size=args.no_repeat_ngram_size,
+            length_penalty=args.length_penalty,
             pad_token_id=tokenizer.eos_token_id,
             use_cache=False,  # Cache not supported yet
         )
