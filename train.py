@@ -25,6 +25,12 @@ from models.recursive_halting_mistral import (
     RecursiveHaltingMistralForCausalLM,
 )
 from transformers.integrations.integration_utils import WandbCallback
+try:
+    # Optional: Muon optimizer for hidden weights
+    from muon import MuonWithAuxAdam  # type: ignore
+    _MUON_AVAILABLE = True
+except Exception:
+    _MUON_AVAILABLE = False
 
 
 class HaltingStatsCallback(TrainerCallback):
@@ -209,6 +215,19 @@ def main():
     p.add_argument("--early-stopping-threshold", type=float, default=0.0)
     p.add_argument("--use-liger-kernel", action="store_true", default=False)
     p.add_argument("--no-use-liger-kernel", dest="use_liger_kernel", action="store_false")
+
+    # Muon optimizer
+    p.add_argument("--use-muon", action="store_true", default=True, help="Use Muon optimizer for hidden weights.")
+    p.add_argument("--no-muon", dest="use_muon", action="store_false")
+    p.add_argument("--muon-lr", type=float, default=0.02, help="Learning rate for Muon (hidden weights).")
+    p.add_argument(
+        "--aux-adam-lr",
+        type=float,
+        default=None,
+        help="Learning rate for auxiliary AdamW groups (embeddings, heads, gains/biases). Defaults to --learning-rate.",
+    )
+    p.add_argument("--aux-beta1", type=float, default=0.9, help="AdamW beta1 for auxiliary groups.")
+    p.add_argument("--aux-beta2", type=float, default=0.95, help="AdamW beta2 for auxiliary groups.")
 
     # Saving / checkpoints
     p.add_argument(
@@ -423,6 +442,112 @@ def main():
             # Use plain WandB logging without ACT metric injection
             callbacks.append(WandbCallback())
 
+    # Optionally build a Muon optimizer with auxiliary AdamW for non-hidden params
+    optimizers = (None, None)
+    if args.use_muon:
+        if not _MUON_AVAILABLE:
+            print("WARNING: --use-muon set but Muon library not available. Falling back to default optimizer.")
+        else:
+            # Derive aux Adam LR if not provided
+            aux_lr = args.aux_adam_lr if args.aux_adam_lr is not None else args.learning_rate
+
+            # Define parameter groups:
+            # - Hidden weights: tensors in the transformer body (model.model) with ndim >= 2 -> Muon
+            # - Hidden gains/biases: tensors in the transformer body with ndim < 2 -> AdamW
+            # - Non-hidden: embeddings, lm_head, ACT-specific heads/film/gates -> AdamW
+            body = getattr(model, "model", None)
+            if body is None:
+                print("WARNING: Could not locate model body; skipping Muon.")
+            else:
+                def distinct(params):
+                    # Remove Nones and preserve order while de-duplicating by id
+                    seen = set()
+                    out = []
+                    for p in params:
+                        if p is None:
+                            continue
+                        pid = id(p)
+                        if pid not in seen:
+                            seen.add(pid)
+                            out.append(p)
+                    return out
+
+                body_params = list(body.parameters())
+                hidden_weights = [p for p in body_params if getattr(p, "ndim", 0) >= 2 and p.requires_grad]
+                hidden_gains_biases = [p for p in body_params if getattr(p, "ndim", 0) < 2 and p.requires_grad]
+
+                nonhidden_params = []
+                # Embeddings
+                try:
+                    nonhidden_params += list(body.embed_tokens.parameters())
+                except Exception:
+                    pass
+                # LM head
+                try:
+                    nonhidden_params += list(model.lm_head.parameters())
+                except Exception:
+                    pass
+                # ACT-specific heads and controls
+                try:
+                    nonhidden_params += list(model.stop_head.parameters())
+                except Exception:
+                    pass
+                try:
+                    if getattr(model, "step_film", None) is not None:
+                        nonhidden_params += list(model.step_film.parameters())
+                except Exception:
+                    pass
+                # step_gates is a Parameter
+                try:
+                    if hasattr(model, "step_gates") and isinstance(model.step_gates, torch.nn.Parameter):
+                        nonhidden_params.append(model.step_gates)
+                except Exception:
+                    pass
+
+                # Ensure we don't double-assign params: remove any nonhidden from hidden groups
+                nonhidden_ids = {id(p) for p in nonhidden_params}
+                hidden_weights = [p for p in hidden_weights if id(p) not in nonhidden_ids]
+                hidden_gains_biases = [p for p in hidden_gains_biases if id(p) not in nonhidden_ids]
+
+                hidden_weights = distinct(hidden_weights)
+                hidden_gains_biases = distinct(hidden_gains_biases)
+                nonhidden_params = distinct([p for p in nonhidden_params if p.requires_grad])
+
+                param_groups = []
+                if len(hidden_weights) > 0:
+                    param_groups.append(
+                        dict(
+                            params=hidden_weights,
+                            use_muon=True,
+                            lr=float(args.muon_lr),
+                            weight_decay=float(args.weight_decay),
+                        )
+                    )
+                # Merge gains/biases into the aux Adam group with nonhidden
+                aux_params = hidden_gains_biases + nonhidden_params
+                if len(aux_params) > 0:
+                    param_groups.append(
+                        dict(
+                            params=aux_params,
+                            use_muon=False,
+                            lr=float(aux_lr),
+                            betas=(float(args.aux_beta1), float(args.aux_beta2)),
+                            weight_decay=float(args.weight_decay),
+                        )
+                    )
+
+                if len(param_groups) > 0:
+                    try:
+                        optimizer = MuonWithAuxAdam(param_groups)
+                        # Pass optimizer; let Trainer build the LR scheduler from args
+                        optimizers = (optimizer, None)
+                        print(
+                            f"Using Muon optimizer: {len(hidden_weights)} hidden-weight tensors with lr={args.muon_lr}, "
+                            f"and {len(aux_params)} aux Adam params with lr={aux_lr}."
+                        )
+                    except Exception as e:
+                        print(f"WARNING: Failed to initialize Muon optimizer; falling back. Error: {e}")
+
     trainer = SFTTrainer(
         model=model,
         args=sft,
@@ -430,6 +555,7 @@ def main():
         eval_dataset=eval_ds,
         processing_class=tok,
         callbacks=callbacks,
+        optimizers=optimizers,
     )
 
     trainer.train()
