@@ -3,6 +3,10 @@
 
 import argparse
 import math
+import json
+import re
+import shutil
+import uuid
 import os
 import sys
 import time
@@ -165,6 +169,12 @@ def main():
     # Model
     p.add_argument("--tokenizer-name", default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--output-dir", default="./results/act_single")
+    p.add_argument(
+        "--overwrite-output-dir",
+        action="store_true",
+        default=False,
+        help="Allow writing into an existing output directory. Without this flag, the script exits if the directory exists.",
+    )
 
     # Dataset
     p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
@@ -241,8 +251,52 @@ def main():
     p.add_argument("--group", default="act-single")
     p.add_argument("--run-name", default=None)
 
+    # Backups (redundant copy of saved final model)
+    p.add_argument("--backup-root", default=os.environ.get("SCIENCE_LLM_BACKUP_ROOT"), help="Root directory where per-run backups are stored (e.g., your NTFS drive mount). Can also be set via SCIENCE_LLM_BACKUP_ROOT.")
+    p.add_argument("--backup", dest="backup", action="store_true", default=None, help="Enable automatic backup of the final model to --backup-root. Defaults to True when --backup-root is set.")
+    p.add_argument("--no-backup", dest="backup", action="store_false")
+
     args = p.parse_args()
 
+    # Safety: require explicit consent to write into an existing output directory
+    try:
+        if os.path.isdir(args.output_dir) and not args.overwrite_output_dir:
+            RED_BG = "\033[1;97;41m"  # bold white on red background
+            YELLOW = "\033[1;33m"
+            RESET = "\033[0m"
+            abspath = os.path.abspath(args.output_dir)
+            msg = [
+                "",
+                f"{RED_BG}{' ' * 74}{RESET}",
+                f"{RED_BG}  OUTPUT DIRECTORY ALREADY EXISTS — REFUSING TO OVERWRITE.        {RESET}",
+                f"{RED_BG}{' ' * 74}{RESET}",
+                "",
+                f"{YELLOW}Directory: {abspath}{RESET}",
+                "To proceed and allow writing into this directory, pass --overwrite-output-dir.",
+                "Alternatively, choose a new path via --output-dir.",
+                "",
+            ]
+            try:
+                print("\n".join(msg), file=sys.stderr)
+            except Exception:
+                print(
+                    "\n".join(
+                        [
+                            "",
+                            "*** OUTPUT DIRECTORY ALREADY EXISTS — REFUSING TO OVERWRITE. ***",
+                            f"Directory: {abspath}",
+                            "Pass --overwrite-output-dir to proceed, or choose a new --output-dir.",
+                            "",
+                        ]
+                    ),
+                    file=sys.stderr,
+                )
+            sys.exit(2)
+    except Exception:
+        # If the check fails for some reason, default to creating the directory safely below
+        pass
+
+    # Create the directory if it doesn't exist yet (or when overwrite was explicitly allowed)
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -258,6 +312,39 @@ def main():
     else:
         os.environ["WANDB_MODE"] = "disabled"
         report_to = "none"
+
+    # Determine whether backups are active
+    backup_root = args.backup_root
+    backups_enabled = (args.backup if args.backup is not None else bool(backup_root)) and bool(backup_root)
+
+    # Loud warning if backups are not enabled
+    if not backups_enabled:
+        RED_BG = "\033[1;97;41m"  # bold white on red background
+        YELLOW = "\033[1;33m"
+        RESET = "\033[0m"
+        msg = [
+            "",
+            f"{RED_BG}{' ' * 74}{RESET}",
+            f"{RED_BG}  WARNING: AUTO-BACKUP IS DISABLED — YOUR FINAL MODEL MAY NOT BE COPIED!  {RESET}",
+            f"{RED_BG}{' ' * 74}{RESET}",
+            "",
+            f"{YELLOW}Set SCIENCE_LLM_BACKUP_ROOT or pass --backup-root <path> to enable backups.",
+            f"Current output_dir: {os.path.abspath(args.output_dir)}{RESET}",
+            f"To silence this warning explicitly, pass --no-backup.",
+            "",
+        ]
+        try:
+            print("\n".join(msg), file=sys.stderr)
+        except Exception:
+            # Fallback without ANSI
+            print("\n".join([
+                "",
+                "*** WARNING: AUTO-BACKUP IS DISABLED — YOUR FINAL MODEL MAY NOT BE COPIED! ***",
+                f"Set SCIENCE_LLM_BACKUP_ROOT or pass --backup-root <path> to enable backups.",
+                f"Current output_dir: {os.path.abspath(args.output_dir)}",
+                "To silence this warning explicitly, pass --no-backup.",
+                "",
+            ]), file=sys.stderr)
 
     print(f"Loading dataset: {args.dataset_path}")
     dataset = load_from_disk(args.dataset_path)
@@ -589,6 +676,94 @@ def main():
                 pass
         except Exception as e:
             print(f"WARNING: Failed to save final model: {e}")
+
+    # Optional backup to secondary drive with per-run unique folder and W&B indexing
+    def _sanitize_name(name: str) -> str:
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", (name or "run"))
+        return (name.strip("-._") or "run")[:120]
+
+    def _maybe_get_wandb_info():
+        info = {"enabled": bool(args.use_wandb), "project": args.wandb_project, "group": args.group}
+        try:
+            import wandb  # type: ignore
+
+            run = wandb.run
+            if run is not None:
+                info.update({
+                    "run_id": getattr(run, "id", None),
+                    "name": getattr(run, "name", None),
+                    "url": getattr(run, "url", None),
+                    "entity": getattr(run, "entity", None),
+                    "project": getattr(run, "project", info.get("project")),
+                })
+            return info, wandb
+        except Exception:
+            return info, None
+
+    def _write_json(path: str, obj):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"WARNING: Failed to write JSON {path}: {e}")
+
+    if backups_enabled:
+        src_dir = args.output_dir
+
+        if os.path.isdir(src_dir) and backup_root:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            run_name = getattr(sft, "run_name", None) or args.run_name or "run"
+            safe_name = _sanitize_name(str(run_name))
+            wb_info, wb_mod = _maybe_get_wandb_info()
+            suffix = f"wb-{wb_info.get('run_id')}" if wb_info.get("run_id") else f"uid-{uuid.uuid4().hex[:8]}"
+            folder = f"{ts}_{safe_name}__{suffix}"
+            backup_dir = os.path.join(backup_root, folder)
+            try:
+                os.makedirs(backup_dir, exist_ok=True)
+                print(f"Backing up model from {src_dir} to {backup_dir} ...")
+                # Copy directory tree into backup folder
+                shutil.copytree(src_dir, os.path.join(backup_dir, os.path.basename(src_dir)), dirs_exist_ok=True)
+
+                # Persist minimal metadata for indexing
+                meta = {
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "source_output_dir": os.path.abspath(args.output_dir),
+                    "source_final_model_dir": os.path.abspath(src_dir),
+                    "backup_root": os.path.abspath(backup_root),
+                    "backup_dir": os.path.abspath(backup_dir),
+                    "run_name": run_name,
+                    "wandb": wb_info,
+                    "metrics": {
+                        "eval_loss": float(loss) if loss is not None else None,
+                        "eval_ppl": float(ppl) if ppl is not None else None,
+                        "eval_mean_token_accuracy": float(eval_mean_token_accuracy) if eval_mean_token_accuracy is not None else None,
+                        "train_act_inner_steps": train_act_inner,
+                        "train_act_expected_steps": train_act_expected,
+                        "eval_act_inner_steps": eval_act_inner,
+                        "eval_act_expected_steps": eval_act_expected,
+                    },
+                    "trainer": {
+                        "global_step": getattr(trainer.state, "global_step", None),
+                        "train_runtime": getattr(trainer.state, "train_runtime", None),
+                    },
+                    "args": vars(args),
+                }
+                _write_json(os.path.join(backup_dir, "backup_meta.json"), meta)
+
+                # Also log the backup path to W&B summary
+                if wb_mod is not None and wb_info.get("enabled"):
+                    try:
+                        wb_mod.run.summary["backup_dir"] = os.path.abspath(backup_dir)
+                        wb_mod.run.summary["backup_folder_name"] = folder
+                        wb_mod.run.summary["backup_final_model_subdir"] = os.path.basename(src_dir)
+                        wb_mod.run.summary["backup_eval_loss"] = meta["metrics"]["eval_loss"]
+                        wb_mod.run.summary["backup_eval_ppl"] = meta["metrics"]["eval_ppl"]
+                    except Exception:
+                        pass
+
+                print(f"Backup complete: {backup_dir}")
+            except Exception as e:
+                print(f"WARNING: Backup failed to {backup_root}: {e}")
 
 if __name__ == "__main__":
     try:
