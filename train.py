@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 from datasets import load_from_disk
 from transformers import (
     AutoTokenizer,
@@ -220,51 +221,17 @@ def main():
     p.add_argument("--use-muon", action="store_true", default=True, help="Use Muon optimizer for hidden weights.")
     p.add_argument("--no-muon", dest="use_muon", action="store_false")
     p.add_argument("--muon-lr", type=float, default=0.02, help="Learning rate for Muon (hidden weights).")
-    p.add_argument(
-        "--aux-adam-lr",
-        type=float,
-        default=None,
-        help="Learning rate for auxiliary AdamW groups (embeddings, heads, gains/biases). Defaults to --learning-rate.",
-    )
+    p.add_argument("--aux-adam-lr", type=float, default=None, help="Learning rate for auxiliary AdamW groups (embeddings, heads, gains/biases). Defaults to --learning-rate.")
     p.add_argument("--aux-beta1", type=float, default=0.9, help="AdamW beta1 for auxiliary groups.")
     p.add_argument("--aux-beta2", type=float, default=0.95, help="AdamW beta2 for auxiliary groups.")
 
     # Saving / checkpoints
-    p.add_argument(
-        "--save-strategy",
-        choices=["no", "steps", "epoch"],
-        default="no",
-        help="Checkpoint saving strategy. 'no' disables checkpointing.",
-    )
-    p.add_argument(
-        "--save-steps",
-        type=float,
-        default=100,
-        help="Save a checkpoint every N steps when --save-strategy=steps. If float < 1, it will be treated as a fraction of the total steps.",
-    )
-    p.add_argument(
-        "--save-total-limit",
-        type=int,
-        default=0,
-        help="Maximum number of checkpoints to keep (0 disables limit). Older checkpoints are deleted.",
-    )
-    p.add_argument(
-        "--load-best-model-at-end",
-        action="store_true",
-        default=False,
-        help="After training, load the best checkpoint according to metric_for_best_model.",
-    )
-    p.add_argument(
-        "--metric-for-best-model",
-        default="eval_loss",
-        help="Metric to use for selecting the best model.",
-    )
-    p.add_argument(
-        "--save-final-model",
-        action="store_true",
-        default=True,
-        help="After training/eval, save the final model to output_dir.",
-    )
+    p.add_argument("--save-strategy", choices=["no", "steps", "epoch"], default="no", help="Checkpoint saving strategy. 'no' disables checkpointing.")
+    p.add_argument("--save-steps", type=float, default=100, help="Save a checkpoint every N steps when --save-strategy=steps. If float < 1, it will be treated as a fraction of the total steps.")
+    p.add_argument("--save-total-limit", type=int, default=0, help="Maximum number of checkpoints to keep (0 disables limit). Older checkpoints are deleted.")
+    p.add_argument("--load-best-model-at-end", action="store_true", default=False, help="After training, load the best checkpoint according to metric_for_best_model.")
+    p.add_argument("--metric-for-best-model", default="eval_loss", help="Metric to use for selecting the best model.")
+    p.add_argument("--save-final-model", action="store_true", default=True, help="After training/eval, save the final model to output_dir.")
     p.add_argument("--no-save-final-model", dest="save_final_model", action="store_false")
 
     # W&B
@@ -442,6 +409,17 @@ def main():
             # Use plain WandB logging without ACT metric injection
             callbacks.append(WandbCallback())
 
+    # Ensure torch.distributed is initialized for Muon if needed (Muon uses dist.get_world_size())
+    if args.use_muon and _MUON_AVAILABLE and dist.is_available() and not dist.is_initialized():
+        try:
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            init_file = f"/tmp/muon_pg_{os.getpid()}"
+            # Use a file-store to avoid requiring env:// vars in single-process
+            dist.init_process_group(backend=backend, init_method=f"file://{init_file}", rank=0, world_size=1)
+            print("Initialized torch.distributed (single-process) for Muon.")
+        except Exception as e:
+            print(f"WARNING: Could not initialize torch.distributed for Muon: {e}")
+
     # Optionally build a Muon optimizer with auxiliary AdamW for non-hidden params
     optimizers = (None, None)
     if args.use_muon:
@@ -617,3 +595,9 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("Exiting early due to Ctrl-C")
+    finally:
+        try:
+            if dist.is_available() and dist.is_initialized():
+                dist.destroy_process_group()
+        except Exception:
+            pass
