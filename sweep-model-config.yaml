@@ -17,6 +17,7 @@ command:
   - --output-dir
   - "./results/sweep_config"
   - --overwrite-output-dir
+  - --no-backup
   - --use-wandb
   - --group
   - sweep-config
