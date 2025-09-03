@@ -1,0 +1,52 @@
+name: config-sweep
+project: science-llm
+method: bayes
+metric:
+  name: eval/loss
+  goal: minimize
+parameters:
+    hidden-size: {values: [1024, 1536, 2048]}
+    intermediate-size: {values: [3584, 4096, 5376, 6144, 7168, 8192]}
+    # film-rank: {values: [768, 1024, 1536, 2048]}
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --dataset-path
+  - "./preprocessed_dataset_83208_9318"
+  - --output-dir
+  - "./results/sweep_config"
+  - --overwrite-output-dir
+  - --use-wandb
+  - --group
+  - sweep-config
+  - --max-steps
+  - "1000"
+  - --eval-steps
+  - "50"
+  - --eval-samples
+  - "500"
+  - --max-length
+  - "32768"
+  - --grad-checkpointing
+  - --per-device-train-batch-size
+  - "8"
+  - --grad-accum
+  - "2"
+  - --kmax
+  - "12"
+  - --tau
+  - "0.999"
+  - --lambda-ponder
+  - "0.0025"
+  - --halting-mass-scale
+  - "1.0"
+  - --lambda-deep-supervision
+  - "0.06"
+  - --use-liger-kernel
+  - --num-attention-heads
+  - "8"
+  - --num-kv-heads
+  - "8"
+  - ${args}
+program: train.py
