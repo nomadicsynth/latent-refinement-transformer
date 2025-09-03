@@ -169,12 +169,7 @@ def main():
     # Model
     p.add_argument("--tokenizer-name", default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--output-dir", default="./results/act_single")
-    p.add_argument(
-        "--overwrite-output-dir",
-        action="store_true",
-        default=False,
-        help="Allow writing into an existing output directory. Without this flag, the script exits if the directory exists.",
-    )
+    p.add_argument("--overwrite-output-dir", action="store_true", default=False, help="Allow writing into an existing output directory. Without this flag, the script exits if the directory exists.")
 
     # Dataset
     p.add_argument("--dataset-path", default="./preprocessed_dataset_2184_227")
