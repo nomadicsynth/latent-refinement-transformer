@@ -7,6 +7,8 @@ metric:
 parameters:
     hidden-size: {values: [1024, 1536, 2048]}
     intermediate-size: {values: [3584, 4096, 5376, 6144, 7168, 8192]}
+    num-layers: {values: [1, 2]}
+    k-max: {values: [8, 12,  16, 32]}
     # film-rank: {values: [768, 1024, 1536, 2048]}
 command:
   - ${env}
@@ -27,6 +29,8 @@ command:
   - "50"
   - --eval-samples
   - "500"
+  - --save-strategy
+  - "no"
   - --max-length
   - "32768"
   - --grad-checkpointing
@@ -34,14 +38,14 @@ command:
   - "8"
   - --grad-accum
   - "2"
-  - --kmax
-  - "12"
+  - --k-max
+  - "16"
   - --tau
   - "0.999"
   - --lambda-ponder
   - "0.0025"
   - --halting-mass-scale
-  - "1.0"
+  - "0.0001"
   - --lambda-deep-supervision
   - "0.06"
   - --use-liger-kernel
