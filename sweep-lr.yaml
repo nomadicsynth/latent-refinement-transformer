@@ -16,12 +16,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_film"
+  - "./results/sweep_lr"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-film
+  - sweep-lr
   - --max-steps
   - "1000"
   - --eval-steps
