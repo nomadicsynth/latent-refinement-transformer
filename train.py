@@ -461,14 +461,7 @@ def main():
     else:
         sft_kwargs["save_total_limit"] = None
 
-    # Conditional: run name provided or constructed
-    if args.run_name:
-        sft_kwargs["run_name"] = args.run_name
-    else:
-        sft_kwargs["run_name"] = (
-            f"K{args.k_max}-tau{args.tau}-lam{args.lambda_ponder}-hs{args.halting_mass_scale}-"
-            f"sf{args.use_step_film}-fr{args.film_rank}-ds{args.lambda_deep_supervision}-lr{args.learning_rate:g}"
-        )
+    sft_kwargs["run_name"] = args.run_name
 
     sft = SFTConfig(**sft_kwargs)
 
