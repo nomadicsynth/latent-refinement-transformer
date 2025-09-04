@@ -1,11 +1,11 @@
-name: attn-film-sweep
+name: sweep-film
 project: science-llm
-method: bayes
+method: grid
 metric:
   name: eval/loss
   goal: minimize
 parameters:
-  film-rank: {values: [768, 1024, 1536, 2048]}
+  film-rank: {values: [512, 768, 1024, 1536, 2048]}
 command:
   - ${env}
   - ${interpreter}
@@ -13,12 +13,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_attn_film"
+  - "./results/sweep_film"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-attn-film
+  - sweep-film
   - --max-steps
   - "1000"
   - --eval-steps
@@ -40,6 +40,10 @@ command:
   - "4096"
   - --num-layers
   - "2"
+  - --num-attention-heads
+  - "8"
+  - --num-kv-heads
+  - "4"
   - --k-max
   - "32"
   - --tau
