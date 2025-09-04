@@ -30,6 +30,7 @@ from models.recursive_halting_mistral import (
     RecursiveHaltingMistralForCausalLM,
 )
 from transformers.integrations.integration_utils import WandbCallback
+from transformers import set_seed
 try:
     # Optional: Muon optimizer for hidden weights
     from muon import MuonWithAuxAdam  # type: ignore
@@ -198,6 +199,7 @@ def main():
     p.add_argument("--lambda-deep-supervision", type=float, default=0.06)
 
     # Trainer
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--learning-rate", type=float, default=9e-4)
     p.add_argument("--per-device-train-batch-size", type=int, default=2)
     p.add_argument("--per-device-eval-batch-size", type=int, default=1)
@@ -340,6 +342,8 @@ def main():
                 "To silence this warning explicitly, pass --no-backup.",
                 "",
             ]), file=sys.stderr)
+
+    set_seed(args.seed)
 
     print(f"Loading dataset: {args.dataset_path}")
     dataset = load_from_disk(args.dataset_path)
