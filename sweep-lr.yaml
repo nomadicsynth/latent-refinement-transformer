@@ -1,9 +1,9 @@
-name: act-lr-sweep-2
+name: sweep-lr
 project: science-llm
 method: bayes
 metric:
-  name: eval/mean_token_accuracy
-  goal: maximize
+  name: eval/loss
+  goal: minimize
 parameters:
   lrs:
     min: 0.001
@@ -15,37 +15,50 @@ command:
   - ${program}
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
-  - --output-root
-  - "./results/hparam_act"
-  - --csv-path
-  - "./results/hparam_act/results-act-ce-film-wandb-sweep-tmp.csv"
+  - --output-dir
+  - "./results/sweep_film"
+  - --overwrite-output-dir
+  - --no-backup
   - --use-wandb
   - --group
-  - act-lr-sweep
+  - sweep-film
   - --max-steps
   - "1000"
   - --eval-steps
   - "50"
   - --eval-samples
   - "500"
+  - --save-strategy
+  - "no"
   - --max-length
-  - "3072"
+  - "32768"
   - --grad-checkpointing
   - --per-device-train-batch-size
-  - "2"
+  - "8"
   - --grad-accum
+  - "2"
+  - --hidden-size
+  - "1024"
+  - --intermediate-size
+  - "4096"
+  - --num-layers
+  - "2"
+  - --num-attention-heads
   - "8"
-  - --kmax
-  - "8"
+  - --num-kv-heads
+  - "4"
+  - --k-max
+  - "32"
   - --tau
   - "0.999"
   - --lambda-ponder
   - "0.0025"
   - --halting-mass-scale
-  - "1.0"
-  - --film-rank
-  - "512"
+  - "0.0001"
   - --lambda-deep-supervision
   - "0.06"
+  # - --film-rank
+  # - "768" # Update when determined from FiLM rank sweep
+  - --use-liger-kernel
   - ${args}
-program: hparam_search_act.py
+program: train.py
