@@ -1,6 +1,6 @@
-name: attn-film-sweep
+name: sweep-attn
 project: science-llm
-method: bayes
+method: grid
 metric:
   name: eval/loss
   goal: minimize
@@ -14,12 +14,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_attn_film"
+  - "./results/sweep_attn"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-attn-film
+  - sweep-attn
   - --max-steps
   - "1000"
   - --eval-steps
