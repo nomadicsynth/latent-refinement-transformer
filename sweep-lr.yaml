@@ -5,8 +5,12 @@ metric:
   name: eval/loss
   goal: minimize
 parameters:
-  lrs:
-    min: 0.001
+  muon-lr:
+    min: 0.008
+    max: 0.1
+    distribution: log_uniform_values  
+  aux-adam-lr:
+    min: 0.0009
     max: 0.01
     distribution: log_uniform_values
 command:
