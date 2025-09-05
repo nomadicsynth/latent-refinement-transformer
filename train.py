@@ -142,6 +142,23 @@ class ACTWandbCallback(WandbCallback):
         return super().on_log(args, state, control, logs=logs, **kwargs)
 
 
+class WandbConfigUpdateCallback(TrainerCallback):
+    """Push extra hyperparameters into the current W&B run config at train start."""
+    def __init__(self, extra_config: dict):
+        self.extra_config = {k: v for k, v in (extra_config or {}).items() if v is not None}
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        try:
+            import wandb  # type: ignore
+            run = getattr(wandb, "run", None)
+            if run is not None and self.extra_config:
+                # Make sure we don’t error if keys already exist
+                run.config.update(self.extra_config, allow_val_change=True)
+        except Exception:
+            pass
+        return control
+
+
 @dataclass
 class RunSummary:
     eval_loss: Optional[float]
@@ -488,6 +505,33 @@ def main():
             # Use plain WandB logging without ACT metric injection
             callbacks.append(WandbCallback())
 
+        # Append AFTER the WandB callback so the run is initialized before we update config
+        callbacks.append(
+            WandbConfigUpdateCallback(
+                {
+                    # Muon and aux optimizer knobs
+                    "use_muon": bool(args.use_muon),
+                    "muon_lr": args.muon_lr,
+                    "muon-lr": args.muon_lr,
+                    "aux_adam_lr": (args.aux_adam_lr if args.aux_adam_lr is not None else args.learning_rate),
+                    "aux-adam-lr": (args.aux_adam_lr if args.aux_adam_lr is not None else args.learning_rate),
+                    "aux_beta1": args.aux_beta1,
+                    "aux-beta1": args.aux_beta1,
+                    "aux_beta2": args.aux_beta2,
+                    "aux-beta2": args.aux_beta2,
+                    # A few related model/training knobs that are useful context
+                    "attn_impl": args.attn_impl,
+                    "num_layers": args.num_layers,
+                    "num_attention_heads": args.num_attention_heads,
+                    "num_kv_heads": args.num_kv_heads,
+                    "use_step_film": args.use_step_film,
+                    "film_rank": args.film_rank,
+                    "lambda_ponder": args.lambda_ponder,
+                    "lambda_deep_supervision": args.lambda_deep_supervision,
+                }
+            )
+        )
+
     # Ensure torch.distributed is initialized for Muon if needed (Muon uses dist.get_world_size())
     if args.use_muon and _MUON_AVAILABLE and dist.is_available() and not dist.is_initialized():
         try:
@@ -602,6 +646,14 @@ def main():
                             f"Using Muon optimizer: {len(hidden_weights)} hidden-weight tensors with lr={args.muon_lr}, "
                             f"and {len(aux_params)} aux Adam params with lr={aux_lr}."
                         )
+                        # Optional: surface group sizes in W&B summary for quick visibility
+                        try:
+                            import wandb  # type: ignore
+                            if getattr(wandb, "run", None) is not None:
+                                wandb.run.summary["muon_hidden_weight_tensors"] = len(hidden_weights)
+                                wandb.run.summary["muon_aux_param_count"] = sum(p.numel() for p in aux_params)
+                        except Exception:
+                            pass
                     except Exception as e:
                         print(f"WARNING: Failed to initialize Muon optimizer; falling back. Error: {e}")
 
