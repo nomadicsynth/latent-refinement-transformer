@@ -332,7 +332,7 @@ def main():
     backups_enabled = (args.backup if args.backup is not None else bool(backup_root)) and bool(backup_root)
 
     # Loud warning if backups are not enabled
-    if not backups_enabled:
+    if not backups_enabled and not args.no_backup:
         RED_BG = "\033[1;97;41m"  # bold white on red background
         YELLOW = "\033[1;33m"
         RESET = "\033[0m"
