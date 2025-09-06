@@ -368,6 +368,7 @@ def main():
         eval_steps=args.eval_steps,
         label_names=["labels"],
         run_name=args.wandb_run_name,
+        include_num_input_tokens_seen=True,
     )
     training_args = TrainingArguments(**ta_kwargs)
 
