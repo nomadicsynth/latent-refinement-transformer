@@ -121,62 +121,6 @@ class EvalMetrics:
     loss: float
 
 
-def preprocess_logits_for_metrics(logits, labels):
-    """Reduce logits to only the tiny slice needed for accuracy metric to save VRAM.
-
-    Hugging Face Trainer will call this on each eval step before storing predictions.
-    We return only the 10-way digit logits for the (sequence_length-2) position (the
-    timestep that predicts the final label token). This avoids keeping the full
-    [batch, seq_len, vocab] tensor in memory across the entire evaluation loop.
-    Returned tensor is already moved to CPU and detached.
-    """
-    import torch
-
-    if isinstance(logits, tuple):  # unwrap potential tuple
-        logits = logits[0]
-    # logits: [B, L, V]; prediction for last label is at position L-2 (due to shift)
-    with torch.no_grad():
-        # Slice before moving to CPU to minimize transfer size
-        needed = logits[:, -2, LABEL_BASE_ID : LABEL_BASE_ID + 10].detach().to("cpu")  # [B,10]
-    return needed
-
-
-def compute_metrics(eval_pred):
-    """Compute accuracy given compact predictions.
-
-    Supports two formats:
-      1. New (with preprocess_logits_for_metrics): predictions shape [N,10] (numpy) of digit logits.
-      2. Fallback legacy: predictions shape [N,L,V] full logits (will down-project on CPU).
-    """
-    import numpy as np
-
-    predictions, labels = eval_pred
-
-    # labels: full token ids sequences (numpy) shape [N, L]
-    if isinstance(predictions, tuple):  # just in case
-        predictions = predictions[0]
-
-    if predictions.ndim == 2 and predictions.shape[1] == 10:
-        # Already reduced digit logits
-        digit_logits = predictions  # [N,10]
-        # final label token id is last non -100 in each label sequence (should be last element)
-        label_tokens = labels[:, -1]
-    else:
-        # Legacy path: full logits were provided. Reduce now (more memory hungry!).
-        # logits shape [N,L,V]; need second-to-last position, digit slice
-        digit_logits = predictions[:, -2, LABEL_BASE_ID : LABEL_BASE_ID + 10]
-        label_tokens = labels[:, -1]
-
-    gold_digits = label_tokens - LABEL_BASE_ID  # 0..9
-    pred_digits = np.argmax(digit_logits, axis=-1)
-    mask_valid = (label_tokens >= LABEL_BASE_ID) & (label_tokens < LABEL_BASE_ID + 10)
-    if mask_valid.sum() == 0:
-        acc = 0.0
-    else:
-        acc = float((gold_digits[mask_valid] == pred_digits[mask_valid]).mean())
-    return {"accuracy": acc}
-
-
 def build_model(args) -> RecursiveHaltingMistralForCausalLM:
     config = MistralConfig(
         vocab_size=VOCAB_SIZE,
@@ -276,6 +220,105 @@ def main():
     eval_ds = MNISTSeqClassification("test", limit=args.limit_eval)
 
     model = build_model(args)
+
+    # === NEW: evaluation telemetry containers (captured by closures) ===
+    halting_expected_steps_batches: List[float] = []
+    per_eval_halting_snapshots: List[float] = []  # optional history (not strictly needed)
+
+    def preprocess_logits_for_metrics(logits, labels):
+        """
+        Reduce logits to [B,10] digit slice and record current batch's expected halting steps.
+        """
+        import torch
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        with torch.no_grad():
+            needed = logits[:, -2, LABEL_BASE_ID:LABEL_BASE_ID + 10].detach().to("cpu")
+        # Record halting stats (None-safe)
+        hs = getattr(model, "_last_expected_steps_mean", None)
+        if hs is not None:
+            halting_expected_steps_batches.append(float(hs))
+        return needed
+
+    def compute_metrics(eval_pred):
+        """
+        Returns:
+          - accuracy (overall)
+          - acc_0..acc_9 (per-class)
+          - acc_macro (mean over classes with at least one sample)
+          - ponder_expected_steps_mean (mean expected halting steps across eval batches)
+          - cm_diag_sum / cm_total (implicit via accuracy already)
+          - confusion_top (a compact string of top off-diagonal confusions)
+        """
+        import numpy as np
+        predictions, labels = eval_pred  # predictions: [N,10] digit logits (numpy)
+
+        digit_logits = predictions
+        label_tokens = labels[:, -1]
+        gold_digits = label_tokens - LABEL_BASE_ID  # 0..9
+        pred_digits = np.argmax(digit_logits, axis=-1)
+
+        valid_mask = (label_tokens >= LABEL_BASE_ID) & (label_tokens < LABEL_BASE_ID + 10)
+        gold_digits_valid = gold_digits[valid_mask]
+        pred_digits_valid = pred_digits[valid_mask]
+
+        if gold_digits_valid.size == 0:
+            acc = 0.0
+        else:
+            acc = float((gold_digits_valid == pred_digits_valid).mean())
+
+        # Confusion matrix
+        cm = np.zeros((10, 10), dtype=np.int64)
+        for g, p in zip(gold_digits_valid, pred_digits_valid):
+            if 0 <= g < 10 and 0 <= p < 10:
+                cm[g, p] += 1
+
+        per_class_acc = {}
+        class_accs = []
+        for c in range(10):
+            row_sum = cm[c].sum()
+            if row_sum > 0:
+                acc_c = cm[c, c] / row_sum
+                class_accs.append(acc_c)
+            else:
+                acc_c = 0.0
+            per_class_acc[f"acc_{c}"] = float(acc_c)
+
+        acc_macro = float(np.mean(class_accs)) if class_accs else 0.0
+
+        # Compact confusion summary (top 5 off-diagonal pairs by count)
+        off_pairs = []
+        for i in range(10):
+            for j in range(10):
+                if i != j and cm[i, j] > 0:
+                    off_pairs.append((cm[i, j], i, j))
+        off_pairs.sort(reverse=True)
+        top_confusions = ";".join(f"{i}->{j}:{n}" for n, i, j in off_pairs[:5])
+
+        # Halting expected steps aggregation
+        if halting_expected_steps_batches:
+            ponder_mean = float(np.mean(halting_expected_steps_batches))
+            ponder_median = float(np.median(halting_expected_steps_batches))
+        else:
+            ponder_mean = 0.0
+            ponder_median = 0.0
+
+        # Preserve history (optional)
+        if ponder_mean > 0:
+            per_eval_halting_snapshots.append(ponder_mean)
+
+        # After consuming, clear for next eval cycle
+        halting_expected_steps_batches.clear()
+
+        metrics = {
+            "accuracy": acc,
+            "acc_macro": acc_macro,
+            "ponder_expected_steps_mean": ponder_mean,
+            "ponder_expected_steps_median": ponder_median,
+            "confusion_top": top_confusions,
+        }
+        metrics.update(per_class_acc)
+        return metrics
 
     # Optional W&B setup (environment vars before Trainer instantiation)
     if args.use_wandb:
