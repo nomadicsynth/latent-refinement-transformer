@@ -26,10 +26,11 @@ from typing import Dict, List
 
 import torch
 from torch.utils.data import Dataset
-from transformers import MistralConfig, Trainer, TrainingArguments
+from transformers import MistralConfig, Trainer, TrainingArguments, set_seed
 
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+
 # ACT telemetry callback (shared with main training script)
 try:
     from train import HaltingStatsCallback  # type: ignore
@@ -62,10 +63,9 @@ class MNISTSeqClassification(Dataset):
         require_torchvision()
         import torchvision
         import torchvision.transforms as T
+
         train_flag = split == "train"
-        self.ds = torchvision.datasets.MNIST(
-            root="data", train=train_flag, download=True, transform=T.ToTensor()
-        )
+        self.ds = torchvision.datasets.MNIST(root="data", train=train_flag, download=True, transform=T.ToTensor())
         self.items: List[torch.Tensor] = []
         self.labels: List[int] = []
         for i, (x, y) in enumerate(self.ds):
@@ -114,28 +114,54 @@ class EvalMetrics:
     loss: float
 
 
+def preprocess_logits_for_metrics(logits, labels):
+    """Reduce logits to only the tiny slice needed for accuracy metric to save VRAM.
+
+    Hugging Face Trainer will call this on each eval step before storing predictions.
+    We return only the 10-way digit logits for the (sequence_length-2) position (the
+    timestep that predicts the final label token). This avoids keeping the full
+    [batch, seq_len, vocab] tensor in memory across the entire evaluation loop.
+    Returned tensor is already moved to CPU and detached.
+    """
+    import torch
+
+    if isinstance(logits, tuple):  # unwrap potential tuple
+        logits = logits[0]
+    # logits: [B, L, V]; prediction for last label is at position L-2 (due to shift)
+    with torch.no_grad():
+        # Slice before moving to CPU to minimize transfer size
+        needed = logits[:, -2, LABEL_BASE_ID : LABEL_BASE_ID + 10].detach().to("cpu")  # [B,10]
+    return needed
+
+
 def compute_metrics(eval_pred):
+    """Compute accuracy given compact predictions.
+
+    Supports two formats:
+      1. New (with preprocess_logits_for_metrics): predictions shape [N,10] (numpy) of digit logits.
+      2. Fallback legacy: predictions shape [N,L,V] full logits (will down-project on CPU).
+    """
     import numpy as np
-    logits, labels = eval_pred
-    # logits shape: [B, L, V]; For causal LM, token at position t (labels[:, t]) is
-    # predicted by logits at position t-1 due to the internal shift in loss computation
-    # (see standard transformers causal LM implementation: shift_logits = logits[..., :-1, :],
-    # shift_labels = labels[..., 1:]). Our label (digit) token is the LAST real token in
-    # the sequence, so we must look at logits from the second-to-last position.
 
-    # Remove the final timestep of logits to align with labels[:, 1:]
-    shifted_logits = logits[:, :-1, :]
-    shifted_labels = labels[:, 1:]
+    predictions, labels = eval_pred
 
-    # We only care about predicting the final (digit) label token.
-    label_tokens = shifted_labels[:, -1]  # true label token ids (259..268)
-    gold_digits = label_tokens - LABEL_BASE_ID
+    # labels: full token ids sequences (numpy) shape [N, L]
+    if isinstance(predictions, tuple):  # just in case
+        predictions = predictions[0]
 
-    # Take logits at predictive timestep (second-to-last original position) and slice to label range.
-    label_logits = shifted_logits[:, -1, LABEL_BASE_ID: LABEL_BASE_ID + 10]  # [B, 10]
-    pred_digits = np.argmax(label_logits, axis=-1)  # 0..9
+    if predictions.ndim == 2 and predictions.shape[1] == 10:
+        # Already reduced digit logits
+        digit_logits = predictions  # [N,10]
+        # final label token id is last non -100 in each label sequence (should be last element)
+        label_tokens = labels[:, -1]
+    else:
+        # Legacy path: full logits were provided. Reduce now (more memory hungry!).
+        # logits shape [N,L,V]; need second-to-last position, digit slice
+        digit_logits = predictions[:, -2, LABEL_BASE_ID : LABEL_BASE_ID + 10]
+        label_tokens = labels[:, -1]
 
-    # All examples should be valid; keep mask in case of padding anomalies.
+    gold_digits = label_tokens - LABEL_BASE_ID  # 0..9
+    pred_digits = np.argmax(digit_logits, axis=-1)
     mask_valid = (label_tokens >= LABEL_BASE_ID) & (label_tokens < LABEL_BASE_ID + 10)
     if mask_valid.sum() == 0:
         acc = 0.0
@@ -150,8 +176,8 @@ def build_model(args) -> RecursiveHaltingMistralForCausalLM:
         hidden_size=args.hidden_size,
         intermediate_size=args.intermediate_size or args.hidden_size * 4,
         num_hidden_layers=args.layers,
-    num_attention_heads=args.heads,
-    num_key_value_heads=getattr(args, 'kv_heads', None) or args.heads,
+        num_attention_heads=args.heads,
+        num_key_value_heads=getattr(args, "kv_heads", None) or args.heads,
         max_position_embeddings=MAX_SEQ_LEN,
     )
     # ACT parameters
@@ -161,28 +187,29 @@ def build_model(args) -> RecursiveHaltingMistralForCausalLM:
     config.use_step_film = not args.no_step_film
     config.film_rank = args.film_rank
     config.lambda_deep_supervision = args.lambda_deep_supervision
+    config.halting_mass_scale = args.halting_mass_scale
     model = RecursiveHaltingMistralForCausalLM(config)
     return model
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--output-dir", default="mnist-act")
-    p.add_argument("--epochs", type=int, default=1)
+    p.add_argument("--output-dir", default="results/mnist-act")
+    p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--per-device-train-batch-size", type=int, default=64)
     p.add_argument("--per-device-eval-batch-size", type=int, default=256)
     p.add_argument("--learning-rate", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
-    p.add_argument("--warmup-steps", type=int, default=200)
+    p.add_argument("--warmup-steps", type=int, default=50)
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--eval-steps", type=int, default=200)
     p.add_argument("--save-steps", type=int, default=500)
-    p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument("--max-steps", type=int, default=-1)
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--bf16", action="store_true")
     p.add_argument("--gradient-accumulation-steps", type=int, default=1)
     p.add_argument("--hidden-size", type=int, default=256)
-    p.add_argument("--layers", type=int, default=8)
+    p.add_argument("--layers", type=int, default=2)
     p.add_argument("--heads", type=int, default=8)
     p.add_argument("--kv-heads", type=int, default=None, help="Number of key/value heads (defaults to --heads if not set)")
     p.add_argument("--intermediate-size", type=int, default=None)
@@ -194,12 +221,13 @@ def parse_args():
     p.add_argument("--lambda-deep-supervision", type=float, default=0.0)
     p.add_argument("--film-rank", type=int, default=64)
     p.add_argument("--no-step-film", action="store_true")
+    p.add_argument("--halting-mass-scale", type=float, default=1.0)
 
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--limit-train", type=int, default=None, help="Limit train examples (debug)")
     p.add_argument("--limit-eval", type=int, default=None, help="Limit eval examples (debug)")
     p.add_argument("--quick-test", action="store_true", help="Run tiny setup to verify script")
-    p.add_argument("--push-to-hub", action="store_true")
+
     # Memory / perf options
     p.add_argument("--grad-checkpoint", action="store_true", help="Enable gradient checkpointing")
     p.add_argument("--no-compile", action="store_true", help="Disable torch.compile even if available")
@@ -210,7 +238,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    torch.manual_seed(args.seed)
+    set_seed(args.seed)
 
     if args.quick_test:
         # Tiny configuration for fast CPU sanity check
@@ -235,7 +263,7 @@ def main():
     model = build_model(args)
 
     if args.grad_checkpoint:
-        if hasattr(model, 'gradient_checkpointing_enable'):
+        if hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
         else:  # pragma: no cover
             print("Gradient checkpointing not supported on model instance.")
@@ -247,10 +275,6 @@ def main():
         except Exception as e:  # pragma: no cover
             print("torch.compile failed (continuing):", e)
 
-    # HuggingFace Trainer expects integer comparison; use -1 to mean 'not set'
-    total_train_steps = args.max_steps if args.max_steps is not None else -1
-
-    # Some older transformers versions use 'evaluation_strategy'; if unavailable we fallback to manual eval.
     ta_kwargs = dict(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -261,8 +285,8 @@ def main():
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        num_train_epochs=args.epochs if total_train_steps is None else 1.0,
-        max_steps=total_train_steps,
+        num_train_epochs=args.epochs,
+        max_steps=args.max_steps,
         report_to=["none"],
         fp16=args.fp16,
         bf16=args.bf16,
@@ -271,7 +295,6 @@ def main():
         remove_unused_columns=False,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
-        auto_find_batch_size=args.auto_batch_reduce,
         label_names=["labels"],
     )
     training_args = TrainingArguments(**ta_kwargs)
@@ -283,6 +306,7 @@ def main():
         eval_dataset=eval_ds,
         data_collator=collate_batch,
         compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         callbacks=([HaltingStatsCallback()] if HaltingStatsCallback is not None else None),
     )
 
@@ -307,7 +331,7 @@ def main():
             attn = torch.ones_like(ex_dev)
             out = model(input_ids=ex_dev.unsqueeze(0), attention_mask=attn.unsqueeze(0))
             next_logits = out.logits[0, -1]
-            label_slice = next_logits[LABEL_BASE_ID:LABEL_BASE_ID + 10]
+            label_slice = next_logits[LABEL_BASE_ID : LABEL_BASE_ID + 10]
             pred = int(torch.argmax(label_slice).item())
             print("Quick test sample predicted digit:", pred)
             print("Model ACT stats steps_mean=", getattr(model, "_last_expected_steps_mean", None))
