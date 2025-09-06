@@ -85,8 +85,8 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         self.step_gates = nn.Parameter(torch.full((self.k_max,), self.step_gates_init))
 
         # Exposed telemetry for callbacks/logging
-        self._last_inner_steps = 1
-        self._last_expected_steps_mean = float(self.k_max)
+        self._last_inner_steps = None
+        self._last_expected_steps_mean = None
         self._last_expected_steps = None
 
     def forward(
