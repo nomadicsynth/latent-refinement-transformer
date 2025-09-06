@@ -206,11 +206,12 @@ def parse_args():
     p.add_argument("--per-device-train-batch-size", type=int, default=64)
     p.add_argument("--per-device-eval-batch-size", type=int, default=256)
     p.add_argument("--learning-rate", type=float, default=3e-4)
+    p.add_argument("--lr-scheduler-type", type=str, default="cosine", choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"])
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--warmup-steps", type=int, default=50)
     p.add_argument("--logging-steps", type=int, default=50)
     p.add_argument("--eval-steps", type=int, default=200)
-    p.add_argument("--save-steps", type=int, default=500)
+    p.add_argument("--save-steps", type=float, default=500)
     p.add_argument("--max-steps", type=int, default=-1)
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--bf16", action="store_true")
@@ -307,7 +308,7 @@ def main():
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
-        lr_scheduler_type="cosine",
+        lr_scheduler_type=args.lr_scheduler_type,
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
