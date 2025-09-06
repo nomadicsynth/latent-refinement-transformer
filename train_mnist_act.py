@@ -30,6 +30,11 @@ from transformers import MistralConfig, Trainer, TrainingArguments
 
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+# ACT telemetry callback (shared with main training script)
+try:
+    from train import HaltingStatsCallback  # type: ignore
+except Exception:
+    HaltingStatsCallback = None  # type: ignore
 
 PAD_ID = 256
 BOS_ID = 257
@@ -278,11 +283,19 @@ def main():
         eval_dataset=eval_ds,
         data_collator=collate_batch,
         compute_metrics=compute_metrics,
+        callbacks=([HaltingStatsCallback()] if HaltingStatsCallback is not None else None),
     )
 
     trainer.train()
     eval_metrics = trainer.evaluate()
     print("Eval:", eval_metrics)
+
+    # If ACT stats available, print a concise summary
+    if HaltingStatsCallback is not None:
+        inner_v = getattr(model, "_last_inner_steps", None)
+        exp_v = getattr(model, "_last_expected_steps_mean", None)
+        if inner_v is not None or exp_v is not None:
+            print(f"ACT summary: inner_steps={inner_v} expected_steps_mean={exp_v}")
 
     # Show a few predictions in quick test mode
     if args.quick_test:
