@@ -65,15 +65,6 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         self.film_rank = getattr(config, "film_rank", 128)
         self.lambda_deep_supervision = getattr(config, "lambda_deep_supervision", 0.0)
 
-        # Persist effective values onto config so save_pretrained() serializes them
-        config.k_max = self.k_max
-        config.tau = self.tau
-        config.lambda_ponder = self.lambda_ponder
-        config.halting_mass_scale = self.halting_mass_scale
-        config.use_step_film = self.use_step_film
-        config.film_rank = self.film_rank
-        config.lambda_deep_supervision = self.lambda_deep_supervision
-
         self.stop_head = StopHead(config.hidden_size)
         # Initialize stop bias so initial p_t ~ 0.55 (gentle early-halt prior)
         with torch.no_grad():
