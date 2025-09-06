@@ -252,20 +252,18 @@ def main():
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         num_train_epochs=args.epochs if total_train_steps is None else 1.0,
-    max_steps=total_train_steps,
+        max_steps=total_train_steps,
         report_to=["none"],
         fp16=args.fp16,
         bf16=args.bf16,
         save_total_limit=2,
         load_best_model_at_end=False,
         remove_unused_columns=False,
+        eval_strategy="steps",
+        eval_steps=args.eval_steps,
+        auto_find_batch_size=args.auto_batch_reduce,
     )
-    try:
-        training_args = TrainingArguments(evaluation_strategy="steps", eval_steps=args.eval_steps, **ta_kwargs)  # type: ignore[arg-type]
-        use_manual_eval = False
-    except TypeError:
-        training_args = TrainingArguments(**ta_kwargs)  # type: ignore[arg-type]
-        use_manual_eval = True
+    training_args = TrainingArguments(**ta_kwargs)
 
     trainer = Trainer(
         model=model,
@@ -276,47 +274,9 @@ def main():
         compute_metrics=compute_metrics,
     )
 
-    if args.push_to_hub:
-        trainer.train()
-        trainer.push_to_hub()
-    else:
-        if not use_manual_eval:
-            try:
-                trainer.train()
-            except RuntimeError as oom:
-                if args.auto_batch_reduce and 'CUDA out of memory' in str(oom) and args.per_device_train_batch_size > 1:
-                    print("[OOM] Reducing batch size and retrying once...")
-                    new_bs = max(1, args.per_device_train_batch_size // 2)
-                    training_args.per_device_train_batch_size = new_bs
-                    trainer.args.per_device_train_batch_size = new_bs
-                    torch.cuda.empty_cache()
-                    trainer.train()
-                else:
-                    raise
-            eval_metrics = trainer.evaluate()
-            if 'eval_accuracy' not in eval_metrics:
-                # Fall back to manual prediction pass for accuracy
-                print("Eval metrics missing accuracy; running prediction pass...")
-                preds = trainer.predict(eval_ds)
-                # preds.metrics may already have something; compute accuracy directly
-                import numpy as np
-                logits = preds.predictions
-                labels = preds.label_ids
-                p_ids = np.argmax(logits, axis=-1)
-                last_idx = labels.shape[1] - 1
-                label_tokens = labels[:, last_idx]
-                pred_tokens = p_ids[:, last_idx]
-                mask = (label_tokens >= LABEL_BASE_ID) & (label_tokens < LABEL_BASE_ID + 10)
-                gold = label_tokens[mask] - LABEL_BASE_ID
-                pred = pred_tokens[mask] - LABEL_BASE_ID
-                acc = float((gold == pred).mean()) if gold.size > 0 else 0.0
-                eval_metrics['eval_accuracy'] = acc
-            print("Eval:", eval_metrics)
-        else:
-            # Manual evaluation every eval_steps
-            trainer.train()
-            eval_metrics = trainer.evaluate()
-            print("Manual Eval (post-train):", eval_metrics)
+    trainer.train()
+    eval_metrics = trainer.evaluate()
+    print("Eval:", eval_metrics)
 
     # Show a few predictions in quick test mode
     if args.quick_test:
