@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from typing import Dict, List
+import os
 
 import torch
 from torch.utils.data import Dataset
@@ -306,6 +307,7 @@ def main():
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
+        lr_scheduler_type="cosine",
         weight_decay=args.weight_decay,
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
