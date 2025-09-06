@@ -64,6 +64,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         self.use_step_film = getattr(config, "use_step_film", True)
         self.film_rank = getattr(config, "film_rank", 128)
         self.lambda_deep_supervision = getattr(config, "lambda_deep_supervision", 0.0)
+        self.step_gates_init = getattr(config, "step_gates_init", -2.0)
 
         self.stop_head = StopHead(config.hidden_size)
         # Initialize stop bias so initial p_t ~ 0.55 (gentle early-halt prior)
@@ -81,7 +82,7 @@ class RecursiveHaltingMistralForCausalLM(MistralForCausalLM):
         # Residual across inner steps
         self.use_residual_across_steps = True
         # Start small (sigmoid(-2) ≈ 0.12) to bias toward gentle updates
-        self.step_gates = nn.Parameter(torch.full((self.k_max,), -2.0))
+        self.step_gates = nn.Parameter(torch.full((self.k_max,), self.step_gates_init))
 
         # Exposed telemetry for callbacks/logging
         self._last_inner_steps = 1
