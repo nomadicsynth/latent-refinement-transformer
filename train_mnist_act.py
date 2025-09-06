@@ -117,20 +117,30 @@ class EvalMetrics:
 def compute_metrics(eval_pred):
     import numpy as np
     logits, labels = eval_pred
-    # labels shape [B, L]; final position contains label token (we want predicted token id)
-    # We compare argmax at last non-pad position.
-    preds = np.argmax(logits, axis=-1)
-    last_idx = labels.shape[1] - 1
-    label_tokens = labels[:, last_idx]
-    pred_tokens = preds[:, last_idx]
+    # logits shape: [B, L, V]; For causal LM, token at position t (labels[:, t]) is
+    # predicted by logits at position t-1 due to the internal shift in loss computation
+    # (see standard transformers causal LM implementation: shift_logits = logits[..., :-1, :],
+    # shift_labels = labels[..., 1:]). Our label (digit) token is the LAST real token in
+    # the sequence, so we must look at logits from the second-to-last position.
+
+    # Remove the final timestep of logits to align with labels[:, 1:]
+    shifted_logits = logits[:, :-1, :]
+    shifted_labels = labels[:, 1:]
+
+    # We only care about predicting the final (digit) label token.
+    label_tokens = shifted_labels[:, -1]  # true label token ids (259..268)
+    gold_digits = label_tokens - LABEL_BASE_ID
+
+    # Take logits at predictive timestep (second-to-last original position) and slice to label range.
+    label_logits = shifted_logits[:, -1, LABEL_BASE_ID: LABEL_BASE_ID + 10]  # [B, 10]
+    pred_digits = np.argmax(label_logits, axis=-1)  # 0..9
+
+    # All examples should be valid; keep mask in case of padding anomalies.
     mask_valid = (label_tokens >= LABEL_BASE_ID) & (label_tokens < LABEL_BASE_ID + 10)
-    gold_digits = label_tokens[mask_valid] - LABEL_BASE_ID
-    pred_digits = pred_tokens[mask_valid] - LABEL_BASE_ID
-    if gold_digits.size == 0:
+    if mask_valid.sum() == 0:
         acc = 0.0
     else:
-        acc = (gold_digits == pred_digits).mean().item() if hasattr((gold_digits == pred_digits), 'item') else float((gold_digits == pred_digits).mean())
-    # The Trainer passes loss separately; keep interface simple.
+        acc = float((gold_digits[mask_valid] == pred_digits[mask_valid]).mean())
     return {"accuracy": acc}
 
 
@@ -262,6 +272,7 @@ def main():
         eval_strategy="steps",
         eval_steps=args.eval_steps,
         auto_find_batch_size=args.auto_batch_reduce,
+        label_names=["labels"],
     )
     training_args = TrainingArguments(**ta_kwargs)
 
