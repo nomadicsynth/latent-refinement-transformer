@@ -31,11 +31,17 @@ from transformers import MistralConfig, Trainer, TrainingArguments, set_seed
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
 
-# ACT telemetry callback (shared with main training script)
-try:
-    from train import HaltingStatsCallback  # type: ignore
-except Exception:
+# ACT telemetry / W&B callbacks (shared with main training script)
+try:  # pragma: no cover - best effort import
+    from train import (
+        HaltingStatsCallback,  # type: ignore
+        ACTWandbCallback,      # type: ignore
+        WandbConfigUpdateCallback,  # type: ignore
+    )
+except Exception:  # Fallbacks if symbols missing
     HaltingStatsCallback = None  # type: ignore
+    ACTWandbCallback = None  # type: ignore
+    WandbConfigUpdateCallback = None  # type: ignore
 
 PAD_ID = 256
 BOS_ID = 257
@@ -233,6 +239,13 @@ def parse_args():
     p.add_argument("--no-compile", action="store_true", help="Disable torch.compile even if available")
     p.add_argument("--auto-batch-reduce", action="store_true", help="On OOM, halve batch and retry once")
 
+    # W&B logging
+    p.add_argument("--use-wandb", action="store_true", default=False, help="Enable Weights & Biases logging")
+    p.add_argument("--no-wandb", dest="use_wandb", action="store_false")
+    p.add_argument("--wandb-project", default="science-llm")
+    p.add_argument("--wandb-group", default="mnist-act")
+    p.add_argument("--wandb-run-name", default=None)
+
     return p.parse_args()
 
 
@@ -262,6 +275,18 @@ def main():
 
     model = build_model(args)
 
+    # Optional W&B setup (environment vars before Trainer instantiation)
+    if args.use_wandb:
+        os.environ["WANDB_PROJECT"] = args.wandb_project
+        if args.wandb_group:
+            os.environ["WANDB_RUN_GROUP"] = args.wandb_group
+        os.environ["WANDB_WATCH"] = "true"  # log gradients/params summary
+        os.environ["WANDB_LOG_MODEL"] = "false"  # we handle artifacts manually if desired
+        report_to = ["wandb"]
+    else:
+        os.environ["WANDB_MODE"] = "disabled"
+        report_to = ["none"]
+
     if args.grad_checkpoint:
         if hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()
@@ -287,7 +312,7 @@ def main():
         save_steps=args.save_steps,
         num_train_epochs=args.epochs,
         max_steps=args.max_steps,
-        report_to=["none"],
+        report_to=report_to,
         fp16=args.fp16,
         bf16=args.bf16,
         save_total_limit=2,
@@ -296,8 +321,52 @@ def main():
         eval_strategy="steps",
         eval_steps=args.eval_steps,
         label_names=["labels"],
+        run_name=args.wandb_run_name,
     )
     training_args = TrainingArguments(**ta_kwargs)
+
+    # Build callbacks
+    callbacks = []
+    # Always include halting telemetry if available
+    if HaltingStatsCallback is not None:
+        try:
+            callbacks.append(HaltingStatsCallback())
+        except Exception:
+            pass
+    # If W&B enabled, add ACT-specific W&B callback + config push
+    if args.use_wandb:
+        if ACTWandbCallback is not None:
+            try:
+                callbacks.append(ACTWandbCallback())
+            except Exception:
+                pass
+        if WandbConfigUpdateCallback is not None:
+            extra_cfg = {
+                # Core model sizing
+                "hidden_size": args.hidden_size,
+                "layers": args.layers,
+                "heads": args.heads,
+                "kv_heads": args.kv_heads if args.kv_heads is not None else args.heads,
+                # ACT hyperparams
+                "k_max": args.k_max,
+                "tau": args.tau,
+                "lambda_ponder": args.lambda_ponder,
+                "halting_mass_scale": args.halting_mass_scale,
+                "film_rank": args.film_rank,
+                "use_step_film": not args.no_step_film,
+                "lambda_deep_supervision": args.lambda_deep_supervision,
+                # Training knobs
+                "learning_rate": args.learning_rate,
+                "weight_decay": args.weight_decay,
+                "warmup_steps": args.warmup_steps,
+                "batch_size_train": args.per_device_train_batch_size,
+                "batch_size_eval": args.per_device_eval_batch_size,
+                "grad_accum": args.gradient_accumulation_steps,
+            }
+            try:
+                callbacks.append(WandbConfigUpdateCallback(extra_cfg))
+            except Exception:
+                pass
 
     trainer = Trainer(
         model=model,
@@ -307,7 +376,7 @@ def main():
         data_collator=collate_batch,
         compute_metrics=compute_metrics,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-        callbacks=([HaltingStatsCallback()] if HaltingStatsCallback is not None else None),
+        callbacks=callbacks if callbacks else None,
     )
 
     trainer.train()
