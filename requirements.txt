@@ -18,3 +18,4 @@ transformers
 trl
 wandb
 wheel
+torchvision
