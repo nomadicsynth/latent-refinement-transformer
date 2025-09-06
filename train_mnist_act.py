@@ -19,19 +19,14 @@ Full run example:
 Requires torchvision (will attempt import and raise helpful error if missing).
 """
 from __future__ import annotations
+
 import argparse
-import math
-import os
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import Dict, List
 
 import torch
 from torch.utils.data import Dataset
-from transformers import (
-    TrainingArguments,
-    Trainer,
-    MistralConfig,
-)
+from transformers import MistralConfig, Trainer, TrainingArguments
 
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
