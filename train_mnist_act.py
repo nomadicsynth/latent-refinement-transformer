@@ -356,6 +356,8 @@ def parse_args():
     p.add_argument("--patch-size", type=int, default=4)
     p.add_argument("--encoder-hidden", type=int, default=64)
     p.add_argument("--freeze-encoder", action="store_true")
+    p.add_argument("--save-vision-processor", action="store_true", help="Save NeonVisionProcessor (config + weights) after training")
+    p.add_argument("--vision-processor-subdir", default="vision_processor", help="Subdirectory under output dir to save processor")
 
     # Muon optimizer
     p.add_argument("--use-muon", action="store_true", default=True, help="Use Muon optimizer for hidden weights.")
@@ -956,6 +958,22 @@ def main():
             pred = int(torch.argmax(label_slice).item())
             print("Quick test sample predicted digit:", pred)
             print("Model ACT stats steps_mean=", getattr(model, "_last_expected_steps_mean", None))
+
+    # Save vision processor if requested
+    if getattr(args, 'save_vision_processor', False) and 'vision_processor' in locals() and vision_processor is not None:
+        vp_dir = os.path.join(args.output_dir, args.vision_processor_subdir)
+        try:
+            vision_processor.save_pretrained(vp_dir)
+            print(f"Saved vision processor to {vp_dir}")
+            if args.use_wandb:
+                try:
+                    import wandb  # type: ignore
+                    if getattr(wandb, 'run', None) is not None:
+                        wandb.run.summary['vision_processor_path'] = vp_dir
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"WARNING: Failed to save vision processor: {e}")
 
 
 if __name__ == "__main__":  # pragma: no cover
