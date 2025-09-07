@@ -11,7 +11,7 @@ Usage (quick test):
 
 Full run example:
   python train_mnist_act.py \
-    --output-dir mnist-act \
+    --output-dir results/mnist-act \
     --epochs 3 \
     --per-device-train-batch-size 64 \
     --learning-rate 3e-4
@@ -23,11 +23,14 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from typing import Dict, List
+import math
 import os
+import random
+from typing import Optional
 
 import torch
 from torch.utils.data import Dataset
-from transformers import MistralConfig, Trainer, TrainingArguments, set_seed
+from transformers import MistralConfig, Trainer, TrainingArguments, set_seed, TrainerCallback
 
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
@@ -50,6 +53,7 @@ EOS_ID = 258  # not used for classification, reserved
 LABEL_BASE_ID = 259  # 259..268 inclusive
 VOCAB_SIZE = 269
 MAX_SEQ_LEN = 1 + 28 * 28 + 1  # bos + pixels + label
+TOKENS_PER_SAMPLE = MAX_SEQ_LEN  # 1 + 784 + 1 = 786
 
 
 def require_torchvision():
@@ -90,6 +94,126 @@ class MNISTSeqClassification(Dataset):
         return {
             "input_ids": ids,
             "labels": ids.clone(),  # LM loss will predict label token
+            "attention_mask": torch.ones_like(ids),
+        }
+
+
+class DynamicAugmentedMNISTSeqClassification(Dataset):
+    """On-the-fly MNIST -> token sequence with internal multiplicity calculation.
+
+    Pass token_param_ratio > 0 along with param_count to auto-compute multiplicity:
+        multiplicity = ceil( ratio * param_count / (base_len * TOKENS_PER_SAMPLE) )
+    Clamped to max_multiplicity. If an explicit override_multiplicity is given, it wins.
+    """
+
+    def __init__(
+        self,
+        *,
+        split: str = "train",
+        limit: int | None = None,
+        enable_aug: bool = True,
+        aug_degrees: float = 10.0,
+        aug_translate: float = 0.10,
+        # multiplicity control
+        token_param_ratio: float = 0.0,
+        param_count: int | None = None,
+        override_multiplicity: int | None = None,
+        max_multiplicity: int = 64,
+        aug_prob: float = 1.0,
+    ):
+        require_torchvision()
+        import torchvision
+
+        self.split = split
+        base_flag = split == "train"
+        self.enable_aug = enable_aug and base_flag
+        self.aug_degrees = aug_degrees
+        self.aug_translate = aug_translate
+        self.limit = limit
+        self.aug_prob = aug_prob  # mutable by scheduler
+        self._global_step = 0
+
+        self.base = torchvision.datasets.MNIST(
+            root="data",
+            train=base_flag,
+            download=True,
+            transform=None,
+        )
+        full_len = len(self.base)
+        if self.limit is not None:
+            full_len = min(full_len, self.limit)
+        self._base_len = full_len
+
+        # Compute multiplicity
+        if override_multiplicity is not None:
+            multiplicity = max(1, int(override_multiplicity))
+            reason = "override"
+        else:
+            if token_param_ratio > 0 and param_count is not None:
+                target_tokens = token_param_ratio * param_count
+                base_tokens = self._base_len * TOKENS_PER_SAMPLE
+                multiplicity = int(math.ceil(target_tokens / base_tokens))
+                if multiplicity < 1:
+                    multiplicity = 1
+                if multiplicity > max_multiplicity:
+                    print(f"[dataset] Auto multiplicity {multiplicity} > max {max_multiplicity}; clamping.")
+                    multiplicity = max_multiplicity
+                reason = "auto-ratio"
+            else:
+                multiplicity = 1
+                reason = "default"
+        self.multiplicity = multiplicity
+        print(f"[dataset] dynamic split={split} base_len={self._base_len} multiplicity={self.multiplicity} reason={reason} ratio={token_param_ratio} param_count={param_count}")
+
+    def __len__(self):
+        return self._base_len * self.multiplicity
+
+    def _build_transform(self, seed: int):
+        import torchvision.transforms as T
+        import torch
+
+        rng = random.Random(seed)
+        # RandomAffine params sampled by torchvision internally; we only fix degrees & translate.
+        transforms = []
+        if self.enable_aug:
+            transforms.append(
+                T.RandomAffine(
+                    degrees=self.aug_degrees,
+                    translate=(self.aug_translate, self.aug_translate),
+                    interpolation=T.InterpolationMode.BILINEAR,
+                    fill=0,
+                )
+            )
+        transforms.append(T.ToTensor())
+        return T.Compose(transforms)
+
+    def __getitem__(self, idx: int):
+        base_idx = idx % self._base_len
+        variant_idx = idx // self._base_len
+        img, label = self.base[base_idx]  # PIL image, int label
+        # Deterministic seed per (base_idx, variant_idx) for reproducibility
+        seed = (base_idx * 1315423911 + variant_idx * 2654435761) & 0xFFFFFFFF
+        transform = self._build_transform(seed)
+        img_t = transform(img)  # [1,28,28]
+        # Optionally drop augmentation stochastically based on aug_prob for non-zero variants
+        # We currently only randomize by deciding after transform if we keep augmented or raw.
+        if self.enable_aug and variant_idx > 0 and self.aug_prob < 1.0:
+            # re-fetch raw if we skip
+            r = random.Random(seed ^ 0xABCDEF).random()
+            if r > self.aug_prob:
+                # Rebuild a transform without augmentation
+                no_aug_seed = seed ^ 0x12345678
+                no_aug_tf = self._build_transform(no_aug_seed)
+                # Temporarily disable aug flags for clean sample
+                prev = self.enable_aug
+                self.enable_aug = False
+                img_t = no_aug_tf(img)
+                self.enable_aug = prev
+        tokens = [BOS_ID] + image_to_tokens(img_t) + [LABEL_BASE_ID + int(label)]
+        ids = torch.tensor(tokens, dtype=torch.long)
+        return {
+            "input_ids": ids,
+            "labels": ids.clone(),
             "attention_mask": torch.ones_like(ids),
         }
 
@@ -192,6 +316,30 @@ def parse_args():
     p.add_argument("--wandb-group", default="mnist-act")
     p.add_argument("--wandb-run-name", default=None)
 
+    # Aug / multiplicity control
+    p.add_argument("--aug-degrees", type=float, default=10.0, help="Max rotation degrees (train only)")
+    p.add_argument("--aug-translate", type=float, default=0.10, help="Max fractional translation (train only)")
+    # Optional severity ramp starts (final targets are the above base values)
+    p.add_argument("--aug-degrees-start", type=float, default=None, help="If set, linearly ramp rotation degrees from this value to --aug-degrees")
+    p.add_argument("--aug-translate-start", type=float, default=None, help="If set, ramp translation fraction from this value to --aug-translate")
+    p.add_argument("--aug-severity-ramp-steps", type=int, default=None, help="Steps over which to ramp augmentation severity (degrees/translate). Defaults to --aug-prob-ramp-steps if unset.")
+    p.add_argument("--aug-severity-auto-fraction", type=float, default=None, help="If set and any *-start provided (and steps not set), auto-compute severity ramp steps as fraction * total_train_steps.")
+    p.add_argument("--no-aug", action="store_true", help="Disable stochastic augmentation")
+    p.add_argument("--aug-multiplicity", type=int, default=None, help="Explicit dataset multiplicity (overrides ratio calc)")
+    p.add_argument("--token-param-ratio", type=float, default=0.0,
+                   help="Target tokens:params ratio (e.g. 20 for 20:1). 0 disables automatic expansion.")
+    p.add_argument("--max-multiplicity", type=int, default=64,
+                   help="Safety cap for automatic multiplicity.")
+    p.add_argument("--include-embeddings-in-param-count", action="store_true",
+                   help="If set, count all params (including embeddings) for ratio; else exclude lm_head & embeddings if possible.")
+    # Per-step augmentation probability ramp (single-epoch friendly)
+    p.add_argument("--aug-prob-start", type=float, default=None, help="If set with --aug-prob-end & --aug-prob-ramp-steps, linearly ramp aug probability from start to end over given steps.")
+    p.add_argument("--aug-prob-end", type=float, default=None, help="See --aug-prob-start")
+    p.add_argument("--aug-prob-ramp-steps", type=int, default=None, help="Total steps over which to ramp aug prob. After that it stays at end value.")
+    p.add_argument("--aug-prob-static", type=float, default=1.0, help="Fallback static augmentation probability when ramp args not supplied.")
+    p.add_argument("--aug-prob-auto-fraction", type=float, default=None,
+                   help="If set (e.g. 0.7) and --aug-prob-start/--aug-prob-end provided but no ramp steps, auto-compute ramp steps as fraction * total_train_steps (after multiplicity).")
+
     return p.parse_args()
 
 
@@ -216,10 +364,91 @@ def main():
         if args.max_steps is None:
             args.max_steps = 30
 
-    train_ds = MNISTSeqClassification("train", limit=args.limit_train)
-    eval_ds = MNISTSeqClassification("test", limit=args.limit_eval)
-
+    # --- Build model first (need param count for dataset) ---
     model = build_model(args)
+
+    if args.include_embeddings_in_param_count:
+        total_params = model.num_parameters()
+    else:
+        total_params = 0
+        for n, p in model.named_parameters():
+            if any(x in n for x in ["embed_tokens", "lm_head"]):
+                continue
+            total_params += p.numel()
+
+    # Training dataset: always use dynamic class now (it will pick multiplicity=1 if ratio disabled & no aug)
+    train_ds = DynamicAugmentedMNISTSeqClassification(
+        split="train",
+        limit=args.limit_train,
+        enable_aug=not args.no_aug,
+        aug_degrees=args.aug_degrees_start if args.aug_degrees_start is not None else args.aug_degrees,
+        aug_translate=args.aug_translate_start if args.aug_translate_start is not None else args.aug_translate,
+        token_param_ratio=args.token_param_ratio,
+        param_count=total_params,
+        override_multiplicity=args.aug_multiplicity,
+        max_multiplicity=args.max_multiplicity,
+        aug_prob=args.aug_prob_static,
+    )
+
+    eval_ds = DynamicAugmentedMNISTSeqClassification(
+        split="test",
+        limit=args.limit_eval,
+        enable_aug=False,
+        aug_degrees=0.0,
+        aug_translate=0.0,
+        token_param_ratio=0.0,
+        param_count=total_params,
+        override_multiplicity=1,
+    )
+
+    # --- Auto-compute ramp steps if requested ---
+    if (
+        args.aug_prob_auto_fraction is not None
+        and args.aug_prob_start is not None
+        and args.aug_prob_end is not None
+        and args.aug_prob_ramp_steps is None
+    ):
+        # total training examples (after multiplicity & limit)
+        effective_train_examples = len(train_ds)
+        batch = args.per_device_train_batch_size
+        accum = args.gradient_accumulation_steps
+        epochs = args.epochs if args.max_steps == -1 or args.max_steps is None else 1
+        steps_per_epoch = math.ceil(effective_train_examples / (batch * accum))
+        if args.max_steps is not None and args.max_steps > 0:
+            total_steps = min(args.max_steps, steps_per_epoch * epochs)
+        else:
+            total_steps = steps_per_epoch * epochs
+        ramp_steps = int(max(1, round(total_steps * args.aug_prob_auto_fraction)))
+        args.aug_prob_ramp_steps = ramp_steps
+        print(f"[aug] auto ramp steps computed: total_steps={total_steps} fraction={args.aug_prob_auto_fraction} ramp_steps={ramp_steps}")
+    else:
+        # still compute total_steps for potential severity auto fraction reuse
+        effective_train_examples = len(train_ds)
+        batch = args.per_device_train_batch_size
+        accum = args.gradient_accumulation_steps
+        epochs = args.epochs if args.max_steps == -1 or args.max_steps is None else 1
+        steps_per_epoch = math.ceil(effective_train_examples / (batch * accum))
+        if args.max_steps is not None and args.max_steps > 0:
+            total_steps = min(args.max_steps, steps_per_epoch * epochs)
+        else:
+            total_steps = steps_per_epoch * epochs
+
+    # Auto-compute severity ramp steps if requested
+    any_severity_start = any(
+        x is not None for x in [args.aug_degrees_start, args.aug_translate_start]
+    )
+    if (
+        any_severity_start
+        and args.aug_severity_ramp_steps is None
+        and args.aug_severity_auto_fraction is not None
+    ):
+        sev_steps = int(max(1, round(total_steps * args.aug_severity_auto_fraction)))
+        args.aug_severity_ramp_steps = sev_steps
+        print(f"[aug] auto severity ramp steps computed: total_steps={total_steps} fraction={args.aug_severity_auto_fraction} ramp_steps={sev_steps}")
+    # If no explicit severity ramp steps but severity starts provided, fall back to prob ramp steps
+    if any_severity_start and args.aug_severity_ramp_steps is None and args.aug_prob_ramp_steps is not None:
+        args.aug_severity_ramp_steps = args.aug_prob_ramp_steps
+        print(f"[aug] severity ramp steps defaulting to prob ramp steps: {args.aug_severity_ramp_steps}")
 
     # === NEW: evaluation telemetry containers (captured by closures) ===
     halting_expected_steps_batches: List[float] = []
@@ -372,15 +601,93 @@ def main():
     )
     training_args = TrainingArguments(**ta_kwargs)
 
+    # (Initial callback list construction removed; rebuilt after defining ramp callback.)
+
+    # Augmentation probability scheduler callback (per-step linear ramp)
+    class AugRampCallback(TrainerCallback):
+        def __init__(self):
+            # Probability ramp
+            self.prob_start = args.aug_prob_start
+            self.prob_end = args.aug_prob_end
+            self.prob_total = args.aug_prob_ramp_steps
+            self.prob_active = (
+                self.prob_start is not None and self.prob_end is not None and self.prob_total is not None and self.prob_total > 0
+            )
+            if self.prob_active:
+                print(f"[aug] prob ramp active: start={self.prob_start} end={self.prob_end} steps={self.prob_total}")
+            elif self.prob_start is not None or self.prob_end is not None or self.prob_total is not None:
+                print("[aug] incomplete prob ramp args provided; using static aug_prob_static")
+
+            # Severity ramp (degrees / translate)
+            self.deg_start = args.aug_degrees_start
+            self.deg_end = args.aug_degrees if args.aug_degrees_start is not None else None  # Only ramp if start provided
+            self.tr_start = args.aug_translate_start
+            self.tr_end = args.aug_translate if args.aug_translate_start is not None else None
+            self.sev_total = args.aug_severity_ramp_steps
+            # Active if at least one pair start/end provided and steps positive
+            self.sev_active = (
+                any(v is not None for v in [self.deg_start, self.tr_start])
+                and self.sev_total is not None and self.sev_total > 0
+            )
+            if self.sev_active:
+                print(f"[aug] severity ramp active: steps={self.sev_total} deg:{self.deg_start}->{self.deg_end} tr:{self.tr_start}->{self.tr_end}")
+            elif any(v is not None for v in [self.deg_start, self.tr_start]) and not self.sev_active:
+                print("[aug] severity ramp incomplete (missing steps); using start values static")
+
+        def on_init_end(self, args_, state, control, **kwargs):
+            # Initialize augmentation probability
+            if self.prob_active:
+                train_ds.aug_prob = float(self.prob_start)
+            else:
+                train_ds.aug_prob = args.aug_prob_static
+            # Initialize severity already set at dataset construction (start values) so nothing needed here.
+            return control
+
+        def on_step_begin(self, args_, state, control, **kwargs):
+            step = state.global_step
+            warmup = step < args.warmup_steps
+            log_now = (step % max(1, args.logging_steps) == 0)
+
+            # Probability ramp update
+            if self.prob_active:
+                if warmup:
+                    train_ds.aug_prob = 0.0
+                else:
+                    if step >= self.prob_total:
+                        prob = float(self.prob_end)
+                    else:
+                        alpha_p = step / max(1, self.prob_total)
+                        prob = float(self.prob_start + (self.prob_end - self.prob_start) * alpha_p)
+                    train_ds.aug_prob = prob
+
+            # Severity ramp update
+            if self.sev_active and not warmup:
+                alpha_s = 1.0 if step >= self.sev_total else step / max(1, self.sev_total)
+                if self.deg_start is not None and self.deg_end is not None:
+                    train_ds.aug_degrees = float(self.deg_start + (self.deg_end - self.deg_start) * alpha_s)
+                if self.tr_start is not None and self.tr_end is not None:
+                    train_ds.aug_translate = float(self.tr_start + (self.tr_end - self.tr_start) * alpha_s)
+
+            if log_now and state.global_step > 0:
+                # Trainer can log scalars via control if using self.log; simpler: use callback hook
+                if hasattr(trainer, "log"):
+                    trainer.log({
+                        "train/aug_prob": train_ds.aug_prob,
+                        "train/aug_translate": train_ds.aug_translate,
+                        "train/global_step": state.global_step
+                    })
+
+            return control
+
+    # Insert ramp callback first so other callbacks see updated aug_prob
+    ramp_cb = AugRampCallback()
     # Build callbacks
-    callbacks = []
-    # Always include halting telemetry if available
+    callbacks = [ramp_cb]
     if HaltingStatsCallback is not None:
         try:
             callbacks.append(HaltingStatsCallback())
         except Exception:
             pass
-    # If W&B enabled, add ACT-specific W&B callback + config push
     if args.use_wandb:
         if ACTWandbCallback is not None:
             try:
@@ -388,28 +695,7 @@ def main():
             except Exception:
                 pass
         if WandbConfigUpdateCallback is not None:
-            extra_cfg = {
-                # Core model sizing
-                "hidden_size": args.hidden_size,
-                "layers": args.layers,
-                "heads": args.heads,
-                "kv_heads": args.kv_heads if args.kv_heads is not None else args.heads,
-                # ACT hyperparams
-                "k_max": args.k_max,
-                "tau": args.tau,
-                "lambda_ponder": args.lambda_ponder,
-                "halting_mass_scale": args.halting_mass_scale,
-                "film_rank": args.film_rank,
-                "use_step_film": not args.no_step_film,
-                "lambda_deep_supervision": args.lambda_deep_supervision,
-                # Training knobs
-                "learning_rate": args.learning_rate,
-                "weight_decay": args.weight_decay,
-                "warmup_steps": args.warmup_steps,
-                "batch_size_train": args.per_device_train_batch_size,
-                "batch_size_eval": args.per_device_eval_batch_size,
-                "grad_accum": args.gradient_accumulation_steps,
-            }
+            extra_cfg = {"aug_prob_static": args.aug_prob_static}
             try:
                 callbacks.append(WandbConfigUpdateCallback(extra_cfg))
             except Exception:
