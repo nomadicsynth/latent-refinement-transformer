@@ -36,6 +36,7 @@ from transformers import MistralConfig, Trainer, TrainingArguments, set_seed, Tr
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
 from models.image_encoders import ConvStemEncoder, PatchEmbeddingEncoder, WaveletEncoder, SIRENImplicitEncoder
+from models.neon_vision_processor import NeonVisionProcessor, NeonVisionConfig
 
 try:
     # Optional: Muon optimizer for hidden weights
@@ -882,58 +883,52 @@ def main():
         optimizers=optimizers,
     )
 
+    # Build NeonVisionProcessor (unified interface) for embedding path if not raw
     if args.image_encoder != "raw":
-        if args.image_encoder == "conv":
-            encoder = ConvStemEncoder(out_dim=model.config.hidden_size, hidden=args.encoder_hidden)
-        elif args.image_encoder == "patch":
-            encoder = PatchEmbeddingEncoder(patch=args.patch_size, out_dim=model.config.hidden_size)
-        elif args.image_encoder == "wavelet":
-            encoder = WaveletEncoder(out_dim=model.config.hidden_size)
-        elif args.image_encoder == "siren":
-            encoder = SIRENImplicitEncoder(out_dim=model.config.hidden_size)
-        if args.freeze_encoder:
-            for p_ in encoder.parameters(): p_.requires_grad = False
+        vision_cfg = NeonVisionConfig(
+            encoder_type=args.image_encoder,
+            image_size=28,
+            in_channels=1,
+            patch_size=args.patch_size,
+            hidden_size=model.config.hidden_size,
+            conv_hidden=args.encoder_hidden,
+            siren_hidden=args.encoder_hidden,
+        )
+        vision_processor = NeonVisionProcessor(config=vision_cfg)
+        if args.freeze_encoder and vision_processor.encoder is not None:
+            for p_ in vision_processor.encoder.parameters():
+                p_.requires_grad = False
     else:
-        encoder = None
+        vision_processor = None
 
     # Wrap Trainer data flow: create a custom data_collator producing inputs_embeds
     def collate_batch_enc(batch):
-        # Work on CPU first (DataLoader may pin memory). Move to device later in model forward.
+        if vision_processor is None:
+            return collate_batch(batch)
         batch_pixels = []
-        labels = []
+        label_ids = []
         for ex in batch:
-            seq = ex["input_ids"]  # CPU tensor
-            pix = seq[1:-1].float().reshape(1,28,28) / 255.0
-            batch_pixels.append(pix)
-            labels.append(seq[-1])
-        imgs = torch.stack(batch_pixels, dim=0)  # (B,1,28,28) CPU
-
-        if encoder is not None:
-            # Encode on CPU (Trainer/Accelerate will move to device later)
-            if any(p.is_cuda for p in encoder.parameters()):
-                encoder_cpu = encoder.to('cpu')
-            else:
-                encoder_cpu = encoder
-            with torch.set_grad_enabled(not args.freeze_encoder):
-                enc_tokens = encoder_cpu(imgs)  # (B,L,H)
-            hidden = enc_tokens.size(-1)
-            bos_embed = torch.zeros(enc_tokens.size(0), 1, hidden, dtype=enc_tokens.dtype)
-            label_placeholder = torch.zeros(enc_tokens.size(0), 1, hidden, dtype=enc_tokens.dtype)
-            inputs_embeds = torch.cat([bos_embed, enc_tokens, label_placeholder], dim=1)  # (B, 1+L+1, H)
-            label_ids = torch.stack(labels)  # (B,)
-            # Build labels tensor: all -100 except last position = label token id
-            labels_tensor = torch.full((enc_tokens.size(0), inputs_embeds.size(1)), -100, dtype=torch.long)
-            labels_tensor[:, -1] = label_ids
-            attention_mask = torch.ones(inputs_embeds.size(0), inputs_embeds.size(1), dtype=torch.long)
-            return {
-                "inputs_embeds": inputs_embeds,
-                "labels": labels_tensor,
-                "attention_mask": attention_mask,
-            }
-        return collate_batch(batch)
+            seq = ex["input_ids"]
+            img = seq[1:-1].float().reshape(1,28,28) / 255.0
+            batch_pixels.append(img)
+            label_ids.append(seq[-1])
+        imgs = torch.stack(batch_pixels, dim=0)
+        proc_out = vision_processor(imgs)
+        if "inputs_embeds" not in proc_out:
+            # raw path fallback (should not happen when vision_processor is set)
+            return {"input_ids": proc_out["input_ids"], "labels": proc_out["input_ids"].clone(), "attention_mask": proc_out["attention_mask"]}
+        emb = proc_out["inputs_embeds"]  # (B,L,H) or variable L
+        B, L, H = emb.shape
+        bos = torch.zeros(B,1,H,dtype=emb.dtype)
+        label_placeholder = torch.zeros(B,1,H,dtype=emb.dtype)
+        inputs_embeds = torch.cat([bos, emb, label_placeholder], dim=1)
+        labels_tensor = torch.full((B, inputs_embeds.size(1)), -100, dtype=torch.long)
+        labels_tensor[:, -1] = torch.stack(label_ids)
+        attention_mask = torch.ones(B, inputs_embeds.size(1), dtype=torch.long)
+        return {"inputs_embeds": inputs_embeds, "labels": labels_tensor, "attention_mask": attention_mask}
 
     # swap data_collator in Trainer(...) if encoder is not None
-    data_collator = collate_batch_enc if encoder is not None else collate_batch
+    data_collator = collate_batch_enc if vision_processor is not None else collate_batch
     trainer.data_collator = data_collator
 
     trainer.train()
