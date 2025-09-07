@@ -34,6 +34,7 @@ from transformers import MistralConfig, Trainer, TrainingArguments, set_seed, Tr
 
 # Local model import
 from models.recursive_halting_mistral import RecursiveHaltingMistralForCausalLM
+from models.image_encoders import ConvStemEncoder, PatchEmbeddingEncoder, WaveletEncoder, SIRENImplicitEncoder
 
 # ACT telemetry / W&B callbacks (shared with main training script)
 try:  # pragma: no cover - best effort import
@@ -324,7 +325,8 @@ def parse_args():
     p.add_argument("--aug-translate-start", type=float, default=None, help="If set, ramp translation fraction from this value to --aug-translate")
     p.add_argument("--aug-severity-ramp-steps", type=int, default=None, help="Steps over which to ramp augmentation severity (degrees/translate). Defaults to --aug-prob-ramp-steps if unset.")
     p.add_argument("--aug-severity-auto-fraction", type=float, default=None, help="If set and any *-start provided (and steps not set), auto-compute severity ramp steps as fraction * total_train_steps.")
-    p.add_argument("--no-aug", action="store_true", help="Disable stochastic augmentation")
+    p.add_argument("--use-aug", action="store_true", default=False, help="Enable stochastic augmentation")
+    p.add_argument("--no-use-aug", dest="use_aug", action="store_false", help="Disable stochastic augmentation")
     p.add_argument("--aug-multiplicity", type=int, default=None, help="Explicit dataset multiplicity (overrides ratio calc)")
     p.add_argument("--token-param-ratio", type=float, default=0.0,
                    help="Target tokens:params ratio (e.g. 20 for 20:1). 0 disables automatic expansion.")
@@ -339,6 +341,12 @@ def parse_args():
     p.add_argument("--aug-prob-static", type=float, default=1.0, help="Fallback static augmentation probability when ramp args not supplied.")
     p.add_argument("--aug-prob-auto-fraction", type=float, default=None,
                    help="If set (e.g. 0.7) and --aug-prob-start/--aug-prob-end provided but no ramp steps, auto-compute ramp steps as fraction * total_train_steps (after multiplicity).")
+
+    # New image encoder args
+    p.add_argument("--image-encoder", default="conv", choices=["conv","patch","wavelet","siren","raw"])
+    p.add_argument("--patch-size", type=int, default=4)
+    p.add_argument("--encoder-hidden", type=int, default=64)
+    p.add_argument("--freeze-encoder", action="store_true")
 
     return p.parse_args()
 
@@ -366,6 +374,10 @@ def main():
 
     # --- Build model first (need param count for dataset) ---
     model = build_model(args)
+    # If using image encoder path (inputs_embeds), inform Trainer which main input to track
+    # so token counting & Accelerate hooks don't warn.
+    if getattr(args, 'image_encoder', 'raw') != 'raw':
+        model.main_input_name = 'inputs_embeds'
 
     if args.include_embeddings_in_param_count:
         total_params = model.num_parameters()
@@ -380,7 +392,7 @@ def main():
     train_ds = DynamicAugmentedMNISTSeqClassification(
         split="train",
         limit=args.limit_train,
-        enable_aug=not args.no_aug,
+        enable_aug=args.use_aug,
         aug_degrees=args.aug_degrees_start if args.aug_degrees_start is not None else args.aug_degrees,
         aug_translate=args.aug_translate_start if args.aug_translate_start is not None else args.aug_translate,
         token_param_ratio=args.token_param_ratio,
@@ -568,11 +580,15 @@ def main():
             print("Gradient checkpointing not supported on model instance.")
 
     if not args.no_compile:
-        try:
-            model = torch.compile(model)  # type: ignore
-            print("Model compiled with torch.compile")
-        except Exception as e:  # pragma: no cover
-            print("torch.compile failed (continuing):", e)
+        # torch.compile can add overhead for very short quick-test runs or custom embed paths
+        if getattr(model, 'main_input_name', '') == 'inputs_embeds' and args.quick_test:
+            print("[compile] Skipping torch.compile for quick_test with inputs_embeds path.")
+        else:
+            try:
+                model = torch.compile(model)  # type: ignore
+                print("Model compiled with torch.compile")
+            except Exception as e:  # pragma: no cover
+                print("torch.compile failed (continuing):", e)
 
     ta_kwargs = dict(
         output_dir=args.output_dir,
@@ -711,6 +727,60 @@ def main():
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         callbacks=callbacks if callbacks else None,
     )
+
+    if args.image_encoder != "raw":
+        if args.image_encoder == "conv":
+            encoder = ConvStemEncoder(out_dim=model.config.hidden_size, hidden=args.encoder_hidden)
+        elif args.image_encoder == "patch":
+            encoder = PatchEmbeddingEncoder(patch=args.patch_size, out_dim=model.config.hidden_size)
+        elif args.image_encoder == "wavelet":
+            encoder = WaveletEncoder(out_dim=model.config.hidden_size)
+        elif args.image_encoder == "siren":
+            encoder = SIRENImplicitEncoder(out_dim=model.config.hidden_size)
+        if args.freeze_encoder:
+            for p_ in encoder.parameters(): p_.requires_grad = False
+    else:
+        encoder = None
+
+    # Wrap Trainer data flow: create a custom data_collator producing inputs_embeds
+    def collate_batch_enc(batch):
+        # Work on CPU first (DataLoader may pin memory). Move to device later in model forward.
+        batch_pixels = []
+        labels = []
+        for ex in batch:
+            seq = ex["input_ids"]  # CPU tensor
+            pix = seq[1:-1].float().reshape(1,28,28) / 255.0
+            batch_pixels.append(pix)
+            labels.append(seq[-1])
+        imgs = torch.stack(batch_pixels, dim=0)  # (B,1,28,28) CPU
+
+        if encoder is not None:
+            # Encode on CPU (Trainer/Accelerate will move to device later)
+            if any(p.is_cuda for p in encoder.parameters()):
+                encoder_cpu = encoder.to('cpu')
+            else:
+                encoder_cpu = encoder
+            with torch.set_grad_enabled(not args.freeze_encoder):
+                enc_tokens = encoder_cpu(imgs)  # (B,L,H)
+            hidden = enc_tokens.size(-1)
+            bos_embed = torch.zeros(enc_tokens.size(0), 1, hidden, dtype=enc_tokens.dtype)
+            label_placeholder = torch.zeros(enc_tokens.size(0), 1, hidden, dtype=enc_tokens.dtype)
+            inputs_embeds = torch.cat([bos_embed, enc_tokens, label_placeholder], dim=1)  # (B, 1+L+1, H)
+            label_ids = torch.stack(labels)  # (B,)
+            # Build labels tensor: all -100 except last position = label token id
+            labels_tensor = torch.full((enc_tokens.size(0), inputs_embeds.size(1)), -100, dtype=torch.long)
+            labels_tensor[:, -1] = label_ids
+            attention_mask = torch.ones(inputs_embeds.size(0), inputs_embeds.size(1), dtype=torch.long)
+            return {
+                "inputs_embeds": inputs_embeds,
+                "labels": labels_tensor,
+                "attention_mask": attention_mask,
+            }
+        return collate_batch(batch)
+
+    # swap data_collator in Trainer(...) if encoder is not None
+    data_collator = collate_batch_enc if encoder is not None else collate_batch
+    trainer.data_collator = data_collator
 
     trainer.train()
     eval_metrics = trainer.evaluate()
