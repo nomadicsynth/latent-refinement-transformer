@@ -5,6 +5,7 @@ ipykernel
 ipywidgets
 liger-kernel
 matplotlib
+git+https://github.com/KellerJordan/Muon
 nbformat
 ninja
 packaging
