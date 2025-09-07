@@ -1,15 +1,18 @@
-name: config-sweep
+name: sweep-lr
 project: science-llm
 method: bayes
 metric:
   name: eval/loss
   goal: minimize
 parameters:
-    hidden-size: {values: [1024, 1536, 2048]}
-    intermediate-size: {values: [3584, 4096, 5376, 6144, 7168, 8192]}
-    num-layers: {values: [1, 2]}
-    k-max: {values: [8, 12,  16, 32]}
-    # film-rank: {values: [768, 1024, 1536, 2048]}
+  muon-lr:
+    min: 0.02
+    max: 0.05
+    distribution: log_uniform_values  
+  # aux-adam-lr:
+  #   min: 0.0009
+  #   max: 0.01
+  #   distribution: log_uniform_values
 command:
   - ${env}
   - ${interpreter}
@@ -17,12 +20,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_config"
+  - "./results/sweep_lr"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-config
+  - sweep-lr
   - --max-steps
   - "1000"
   - --eval-steps
@@ -38,8 +41,18 @@ command:
   - "8"
   - --grad-accum
   - "2"
+  - --hidden-size
+  - "1024"
+  - --intermediate-size
+  - "4096"
+  - --num-layers
+  - "2"
+  - --num-attention-heads
+  - "8"
+  - --num-kv-heads
+  - "4"
   - --k-max
-  - "16"
+  - "32"
   - --tau
   - "0.999"
   - --lambda-ponder
@@ -48,10 +61,8 @@ command:
   - "0.0001"
   - --lambda-deep-supervision
   - "0.06"
+  - --film-rank
+  - "1024"
   - --use-liger-kernel
-  - --num-attention-heads
-  - "8"
-  - --num-kv-heads
-  - "8"
   - ${args}
 program: train.py

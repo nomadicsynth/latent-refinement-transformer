@@ -1,18 +1,12 @@
-name: sweep-lr
+name: sweep-attn
 project: science-llm
-method: bayes
+method: grid
 metric:
   name: eval/loss
   goal: minimize
 parameters:
-  muon-lr:
-    min: 0.02
-    max: 0.05
-    distribution: log_uniform_values  
-  # aux-adam-lr:
-  #   min: 0.0009
-  #   max: 0.01
-  #   distribution: log_uniform_values
+  num-attention-heads: {values: [4, 8, 16]}
+  num-kv-heads: {values: [4, 8, 16]}
 command:
   - ${env}
   - ${interpreter}
@@ -20,12 +14,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_lr"
+  - "./results/sweep_attn"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-lr
+  - sweep-attn
   - --max-steps
   - "1000"
   - --eval-steps
@@ -47,10 +41,6 @@ command:
   - "4096"
   - --num-layers
   - "2"
-  - --num-attention-heads
-  - "8"
-  - --num-kv-heads
-  - "4"
   - --k-max
   - "32"
   - --tau
@@ -61,8 +51,6 @@ command:
   - "0.0001"
   - --lambda-deep-supervision
   - "0.06"
-  - --film-rank
-  - "1024"
   - --use-liger-kernel
   - ${args}
 program: train.py

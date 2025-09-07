@@ -1,12 +1,15 @@
-name: sweep-attn
+name: config-sweep
 project: science-llm
-method: grid
+method: bayes
 metric:
   name: eval/loss
   goal: minimize
 parameters:
-  num-attention-heads: {values: [4, 8, 16]}
-  num-kv-heads: {values: [4, 8, 16]}
+    hidden-size: {values: [1024, 1536, 2048]}
+    intermediate-size: {values: [3584, 4096, 5376, 6144, 7168, 8192]}
+    num-layers: {values: [1, 2]}
+    k-max: {values: [8, 12,  16, 32]}
+    # film-rank: {values: [768, 1024, 1536, 2048]}
 command:
   - ${env}
   - ${interpreter}
@@ -14,12 +17,12 @@ command:
   - --dataset-path
   - "./preprocessed_dataset_83208_9318"
   - --output-dir
-  - "./results/sweep_attn"
+  - "./results/sweep_config"
   - --overwrite-output-dir
   - --no-backup
   - --use-wandb
   - --group
-  - sweep-attn
+  - sweep-config
   - --max-steps
   - "1000"
   - --eval-steps
@@ -35,14 +38,8 @@ command:
   - "8"
   - --grad-accum
   - "2"
-  - --hidden-size
-  - "1024"
-  - --intermediate-size
-  - "4096"
-  - --num-layers
-  - "2"
   - --k-max
-  - "32"
+  - "16"
   - --tau
   - "0.999"
   - --lambda-ponder
@@ -52,5 +49,9 @@ command:
   - --lambda-deep-supervision
   - "0.06"
   - --use-liger-kernel
+  - --num-attention-heads
+  - "8"
+  - --num-kv-heads
+  - "8"
   - ${args}
 program: train.py

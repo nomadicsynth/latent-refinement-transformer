@@ -120,10 +120,10 @@ python infer.py --checkpoint_dir ckpt --sampling_config sampling_overrides.json
 
 ## Hyperparameter Sweeps (Weights & Biases)
 
-Sweep YAMLs (grid / bayes) live at repo root:
+Sweep YAMLs (grid / bayes) now live under `sweeps/` directory:
 
-| File | Purpose |
-|------|---------|
+| File (under `sweeps/`) | Purpose |
+|------------------------|---------|
 | `sweep.yaml` | ACT core hyperparams (ponder, FiLM, deep supervision) via `hparam_search_act.py` |
 | `sweep-attn.yaml` | Vary attention / KV heads |
 | `sweep-film.yaml` | FiLM rank grid |
@@ -133,7 +133,7 @@ Sweep YAMLs (grid / bayes) live at repo root:
 Example launch (W&B CLI):
 
 ```bash
-wandb sweep sweep-attn.yaml
+wandb sweep sweeps/sweep-attn.yaml
 # then agent:
 wandb agent <entity>/<project>/<sweep_id>
 ```
