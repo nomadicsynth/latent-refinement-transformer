@@ -9,13 +9,14 @@ nbformat
 ninja
 packaging
 pandas
+PyWavelets
 scipy
 sentencepiece
 statsmodels
 torch
+torchvision
 tqdm
 transformers
 trl
 wandb
 wheel
-torchvision
