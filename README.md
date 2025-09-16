@@ -1,4 +1,4 @@
-# science-llm
+# latent-refinement-transformer
 
 Experimental playground for Adaptive Computation Time (ACT) / recursive halting variants of a compact **Mistral-style causal LM** plus lightweight vision tokenization experiments on MNIST. The codebase focuses on:
 
@@ -247,11 +247,11 @@ If Muon not installed, a warning is emitted and standard optimizer used.
 If this codebase informs your research, you can cite generically:
 
 ```text
-@software{science_llm_act_2025,
-  title = {science-llm: Recursive Halting / ACT Mistral Experiments},
+@software{latent_refinement_transformer_2025,
+  title = {latent-refinement-transformer: Recursive Halting / ACT Mistral Experiments},
   author = {Contributors},
   year = {2025},
-  url = {https://github.com/nomadicsynth/science-llm}
+  url = {https://github.com/nomadicsynth/latent-refinement-transformer}
 }
 ```
 
